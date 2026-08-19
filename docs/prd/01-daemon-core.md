@@ -60,7 +60,7 @@ Implement the codec directly from [Apple's ANCS specification](https://developer
 - Request app identifier, app display name, title up to 256 bytes, and message up to 2048 bytes.
 - Maintain at most 100 pending notification UIDs.
 - Coalesce Modified events by UID, cancel pending work on Removed, and skip `PreExisting` notifications to avoid a login flood.
-- Cache app display names in memory for the daemon lifetime and fall back to bundle identifier after timeout.
+- Cache app display names in memory for the active ANCS session and fall back to bundle identifier after timeout.
 - Treat malformed packets, invalid UTF-8, disappearing services, and notification-service failures as recoverable.
 
 ## Desktop notification behavior
