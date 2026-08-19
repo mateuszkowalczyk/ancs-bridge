@@ -22,6 +22,7 @@ pub struct SessionMetadata {
     pub recoverable_error_count: u64,
     pub dropped_event_count: u64,
     pub timed_out_request_count: u64,
+    pub last_error_code: Option<&'static str>,
 }
 
 /// One active iPhone ANCS session. All payload-bearing maps are destroyed by
@@ -90,6 +91,7 @@ where
                 if let Some(handle) = self.handles.remove(&event.uid) {
                     if self.sink.close(handle).await.is_err() {
                         self.metadata.recoverable_error_count += 1;
+                        self.metadata.last_error_code = Some("desktop-close-failed");
                     }
                 }
             }
@@ -134,6 +136,7 @@ where
             Ok(_) => return Ok(true),
             Err(_error) => {
                 self.metadata.recoverable_error_count += 1;
+                self.metadata.last_error_code = Some("notification-attributes-failed");
                 tracing::warn!(
                     uid,
                     error_code = "notification-attributes-failed",
@@ -156,6 +159,7 @@ where
                 }
                 Err(error) => {
                     self.metadata.recoverable_error_count += 1;
+                    self.metadata.last_error_code = Some("app-attributes-failed");
                     tracing::warn!(
                         uid,
                         error_code = "app-attributes-failed",
@@ -182,6 +186,7 @@ where
             }
             Err(_) => {
                 self.metadata.recoverable_error_count += 1;
+                self.metadata.last_error_code = Some("desktop-delivery-failed");
                 tracing::warn!(uid, event = ?kind, error_code = "desktop-delivery-failed", "recoverable notification delivery failure");
             }
         }
@@ -262,7 +267,10 @@ where
                     TransportPacket::NotificationSource(bytes) => {
                         match NotificationEvent::parse(&bytes) {
                             Ok(event) => self.ingest(event).await,
-                            Err(_) => self.metadata.recoverable_error_count += 1,
+                            Err(_) => {
+                                self.metadata.recoverable_error_count += 1;
+                                self.metadata.last_error_code = Some("malformed-notification-source");
+                            }
                         }
                     }
                 }
@@ -274,6 +282,7 @@ where
         for (_, handle) in self.handles.drain() {
             if self.sink.close(handle).await.is_err() {
                 self.metadata.recoverable_error_count += 1;
+                self.metadata.last_error_code = Some("desktop-close-failed");
             }
         }
         self.pending_order.clear();

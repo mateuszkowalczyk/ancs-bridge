@@ -1,12 +1,17 @@
 use ancs_bridge::{
     bluetooth::{supervisor::Supervisor, transport::BluerTransport},
     clock::TokioClock,
+    config::ConfigurationStore,
     notification::FreedesktopSink,
-    status::TracingStatusWriter,
+    status::{
+        status_output, PersistentStatusWriter, ProcfsProcessChecker, StatusIdentity, StatusStore,
+        MACHINE_API_VERSION,
+    },
 };
-use anyhow::{anyhow, Result};
-use bluer::Address;
-use clap::{Parser, Subcommand};
+use anyhow::{anyhow, Context, Result};
+use clap::{ArgAction, Parser, Subcommand};
+use serde::Serialize;
+use std::io::{self, Write};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -22,43 +27,92 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run directly with explicit development inputs. Stable configuration is a later iteration.
-    Daemon {
-        #[arg(long)]
-        adapter: String,
-        #[arg(long)]
-        device: Address,
+    /// Run the configured long-lived bridge.
+    Daemon,
+    /// Return the current machine-readable runtime status.
+    Status {
+        #[arg(long, required = true, action = ArgAction::SetTrue)]
+        json: bool,
     },
+    /// Return package and machine API versions.
+    Version {
+        #[arg(long, required = true, action = ArgAction::SetTrue)]
+        json: bool,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionOutput<'a> {
+    api_version: u32,
+    version: &'a str,
 }
 
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        tracing::error!(error_code = "daemon-failed", error = %error, "daemon stopped");
+        eprintln!("ancs-bridge: {error:#}");
         std::process::exit(1);
     }
 }
 
 async fn run() -> Result<()> {
+    match Cli::parse().command {
+        Command::Daemon => daemon().await,
+        Command::Status { json: true } => status(),
+        Command::Version { json: true } => write_json(&VersionOutput {
+            api_version: MACHINE_API_VERSION,
+            version: env!("CARGO_PKG_VERSION"),
+        }),
+        Command::Status { json: false } | Command::Version { json: false } => {
+            unreachable!("clap requires --json")
+        }
+    }
+}
+
+async fn daemon() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_target(false)
         .try_init()
-        .map_err(|error| anyhow!("initializing tracing: {error}"))?;
-    let Cli { command } = Cli::parse();
-    match command {
-        Command::Daemon { adapter, device } => {
-            let transport = BluerTransport::new(adapter, device);
-            Supervisor::new(
-                transport,
-                FreedesktopSink::default(),
-                TokioClock::default(),
-                TracingStatusWriter,
-            )
-            .run()
-            .await
-        }
-    }
+        .map_err(|error| anyhow!("initializing daemon tracing: {error}"))?;
+    let configuration = ConfigurationStore::from_environment()?
+        .load()?
+        .context("ancs-bridge is not configured")?;
+    let status_store = StatusStore::from_environment()?;
+    let status_writer =
+        PersistentStatusWriter::new(status_store, StatusIdentity::from(&configuration));
+    Supervisor::new(
+        BluerTransport::new(configuration.adapter, configuration.device_address),
+        FreedesktopSink::default(),
+        TokioClock::default(),
+        status_writer,
+    )
+    .run()
+    .await
+}
+
+fn status() -> Result<()> {
+    let configuration = ConfigurationStore::from_environment()?.load()?;
+    let status_store = if configuration.is_some() {
+        Some(StatusStore::from_environment()?)
+    } else {
+        None
+    };
+    let output = status_output(
+        configuration.as_ref(),
+        status_store.as_ref(),
+        &ProcfsProcessChecker,
+    )?;
+    write_json(&output)
+}
+
+fn write_json(value: &impl Serialize) -> Result<()> {
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    serde_json::to_writer(&mut output, value).context("serializing machine output")?;
+    output.write_all(b"\n").context("writing machine output")?;
+    Ok(())
 }

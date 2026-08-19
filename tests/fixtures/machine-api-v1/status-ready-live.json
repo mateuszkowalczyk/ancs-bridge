@@ -1,0 +1,1 @@
+{"apiVersion":1,"state":"ready","reasonCode":null,"adapter":"hci0","deviceAddress":"AA:BB:CC:DD:EE:FF","deviceName":"iPhone","connected":true,"servicesResolved":true,"ancsAvailable":true,"subscribed":true,"lastErrorCode":null,"lastTransitionAt":"2026-08-19T10:00:00Z","lastNotificationAt":"2026-08-19T10:01:00Z","pid":1234,"stale":false}

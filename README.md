@@ -5,16 +5,59 @@ Notification Center Service (ANCS) to Freedesktop desktop notifications. The
 production core is a Rust 2021 crate built on Tokio and `bluer`; it does not
 depend on the third-party `ancs` crate.
 
-The stable configuration and machine API are intentionally deferred. For
-development, the daemon accepts explicit bonded-device inputs:
+The daemon reads one versioned configuration from
+`$XDG_CONFIG_HOME/ancs-bridge/config.toml`, falling back to
+`~/.config/ancs-bridge/config.toml`:
+
+```toml
+schema_version = 1
+
+[bluetooth]
+adapter = "hci0"
+device_address = "AA:BB:CC:DD:EE:FF"
+device_name = "iPhone"
+
+[desktop]
+suppress_phone_audio = true
+```
+
+The setup command is planned for a later iteration, so developers currently
+prepare this file manually. The production command itself takes no device
+selection arguments:
 
 ```console
-cargo run -- daemon --adapter hci0 --device AA:BB:CC:DD:EE:FF
+cargo run -- daemon
 ```
 
 It never powers the adapter and has no generic `Device1.Connect()` recovery
 path. The bonded iPhone reconnects to the retained connectable,
 non-discoverable HID advertisement.
+
+Configuration writes provided by the library are atomic and replace the file
+with mode `0600`. Adapter names and bonded identity addresses are validated
+before any BlueZ transport or object path is constructed.
+
+## Read-only machine API v1
+
+Two stable JSON commands are available:
+
+```console
+$ cargo run --quiet -- version --json
+{"apiVersion":1,"version":"0.1.0"}
+$ cargo run --quiet -- status --json
+{"apiVersion":1,"state":"unconfigured","reasonCode":null,"adapter":null,"deviceAddress":null,"deviceName":null,"connected":false,"servicesResolved":false,"ancsAvailable":false,"subscribed":false,"lastErrorCode":null,"lastTransitionAt":null,"lastNotificationAt":null,"pid":null,"stale":false}
+```
+
+The daemon atomically publishes owner-only runtime state at
+`$XDG_RUNTIME_DIR/ancs-bridge/status.json`. `status --json` verifies the
+recorded PID is a live `ancs-bridge daemon` and that the snapshot identity still
+matches configuration. It preserves a stopped daemon's last snapshot with
+`stale: true`; an unconfigured installation returns `unconfigured`, while a
+configured installation with no snapshot returns `daemon-not-running`.
+
+Successful machine commands write exactly one JSON object to stdout. Failures
+leave stdout empty, write a concise diagnostic to stderr, and return nonzero.
+The committed v1 fixtures live in `tests/fixtures/machine-api-v1/`.
 
 ## Production modules
 
@@ -30,13 +73,17 @@ non-discoverable HID advertisement.
   Data Source protocol data.
 - `ancs::session` serializes Control Point work and owns the active session's
   UID queue, desktop handles, and app-name cache.
+- `config` resolves XDG paths, validates the versioned TOML model, and performs
+  atomic owner-only replacement.
 - `notification`, `clock`, and `status` provide production implementations and
-  deterministic fakes.
+  deterministic fakes. Status publication adds RFC 3339 transition and
+  successful-delivery timestamps without payload fields.
 
 Notification payload is held in a dedicated type that cannot be debugged,
-displayed, cloned, or serialized. Status and tracing expose only state,
-reason codes, UIDs, and counters. Freedesktop delivery runs on a dedicated
-actor because the synchronous `notify-rust` D-Bus handle is not `Send`.
+displayed, cloned, or serialized. Configuration, status, and tracing expose
+only device metadata, state, stable reason/error codes, timestamps, UIDs, and
+counters. Freedesktop delivery runs on a dedicated actor because the
+synchronous `notify-rust` D-Bus handle is not `Send`.
 
 ## Automated validation
 

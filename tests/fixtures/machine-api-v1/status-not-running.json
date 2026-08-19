@@ -1,0 +1,1 @@
+{"apiVersion":1,"state":"error","reasonCode":"daemon-not-running","adapter":"hci0","deviceAddress":"AA:BB:CC:DD:EE:FF","deviceName":"iPhone","connected":false,"servicesResolved":false,"ancsAvailable":false,"subscribed":false,"lastErrorCode":null,"lastTransitionAt":null,"lastNotificationAt":null,"pid":null,"stale":true}

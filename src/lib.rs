@@ -5,7 +5,9 @@
 //! payload fields.
 
 pub mod ancs;
+mod atomic_file;
 pub mod bluetooth;
 pub mod clock;
+pub mod config;
 pub mod notification;
 pub mod status;

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-19 — Iteration 003
+
+Iteration: `docs/tasks/archived/iteration-003-runtime-machine-api.md`
+
+- Added a config-driven daemon with validated version 1 TOML configuration and atomic owner-only configuration and runtime-status persistence.
+- Added stable `version --json` and `status --json` machine commands, including live/stale daemon detection and useful unconfigured or stopped-daemon states.
+- Added committed machine API v1 fixtures and privacy-focused command tests that keep notification content out of persistent and diagnostic output.
+
 ## 2026-08-19 — Iteration 002
 
 Iteration: `docs/tasks/archived/iteration-002-production-core.md`
