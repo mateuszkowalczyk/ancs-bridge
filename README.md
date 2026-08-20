@@ -21,9 +21,9 @@ device_name = "iPhone"
 suppress_phone_audio = true
 ```
 
-The setup command is planned for a later iteration, so developers currently
-prepare this file manually. The production command itself takes no device
-selection arguments:
+Interactive setup creates this file only after the confirmed phone reaches
+ANCS readiness and all temporary BlueZ state has been cleaned up. The
+production daemon itself takes no device-selection arguments:
 
 ```console
 cargo run -- daemon
@@ -37,7 +37,47 @@ Configuration writes provided by the library are atomic and replace the file
 with mode `0600`. Adapter names and bonded identity addresses are validated
 before any BlueZ transport or object path is constructed.
 
-## Read-only machine API v1
+## Diagnostics and setup
+
+Run the seven stable environment/readiness checks before setup:
+
+```console
+ancs-bridge doctor --json
+```
+
+`doctor` always emits one complete JSON result when probes can be constructed.
+Warnings cover unconfigured or transient states; any failed check makes `ok`
+false and the exit status nonzero. It never powers an adapter or selects among
+multiple unconfigured adapters.
+
+Setup is a bidirectional JSON Lines protocol:
+
+```console
+ancs-bridge setup --jsonl [--disable-phone-audio] [--repair]
+```
+
+The caller reads and reacts to each flushed event before sending a command.
+For example, after a `confirmation-request`, send the exact opaque request ID:
+
+```json
+{"v":1,"command":"confirm","requestId":"setup-1","accept":true}
+```
+
+The candidate, confirmation, and ANCS deadlines are five minutes, 30 seconds,
+and 60 seconds. Reject, cancel, malformed or unsupported input, stdin closure,
+timeout, SIGINT, and SIGTERM emit a stable final error and attempt full cleanup.
+Setup reuses a unique ready bond only after confirmation. A configured but
+unready bond returns `repair-required`; rerun with `--repair` to authorize
+forgetting only that configured identity. Configuration is atomically written
+last, and setup never calls generic `Device1.Connect()`.
+
+SIGKILL, power loss, or a machine crash cannot run in-process cleanup. If that
+happens during the pairing window, inspect `bluetoothctl show` and restore the
+adapter's previous `Pairable` and `Discoverable` values before retrying. BlueZ
+removes the process-owned agent, advertisement, and GATT application when its
+D-Bus connection disappears.
+
+## Machine API v1
 
 Two stable JSON commands are available:
 
@@ -55,9 +95,31 @@ matches configuration. It preserves a stopped daemon's last snapshot with
 `stale: true`; an unconfigured installation returns `unconfigured`, while a
 configured installation with no snapshot returns `daemon-not-running`.
 
-Successful machine commands write exactly one JSON object to stdout. Failures
-leave stdout empty, write a concise diagnostic to stderr, and return nonzero.
-The committed v1 fixtures live in `tests/fixtures/machine-api-v1/`.
+Single-result machine commands write exactly one JSON object to stdout. Setup
+reserves stdout for flushed JSONL. Human diagnostics always use stderr. The
+committed v1 fixtures live in `tests/fixtures/machine-api-v1/`.
+
+## Exact-device audio suppression and teardown
+
+`--disable-phone-audio` owns one canonical WirePlumber rule for the confirmed
+identity at
+`$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d/90-ancs-bridge-AA_BB_CC_DD_EE_FF.conf`.
+The rule disables only `bluez_card.AA_BB_CC_DD_EE_FF`; it does not change
+Bluetooth roles or affect other devices. Identical application/removal is a
+no-op, while different content at the owned path is preserved and reported as
+`audio-rule-conflict`. WirePlumber restarts only after a real change. A later
+setup failure rolls back only a rule created by that setup transaction.
+
+Remove bridge-owned state with:
+
+```console
+ancs-bridge teardown [--forget-device]
+```
+
+Teardown is silent and idempotent. It stops/disables the user service when the
+unit exists, removes and reloads the exact audio rule, optionally forgets only
+the configured bond, then deletes configuration last. Any required cleanup
+failure retains configuration so the same command can be retried safely.
 
 ## Production modules
 
@@ -75,6 +137,8 @@ The committed v1 fixtures live in `tests/fixtures/machine-api-v1/`.
   UID queue, desktop handles, and app-name cache.
 - `config` resolves XDG paths, validates the versioned TOML model, and performs
   atomic owner-only replacement.
+- `diagnostics`, `machine`, `setup`, `audio`, `service`, and `teardown` own the
+  machine protocol and transactional device lifecycle behind fakeable bounds.
 - `notification`, `clock`, and `status` provide production implementations and
   deterministic fakes. Status publication adds RFC 3339 transition and
   successful-delivery timestamps without payload fields.

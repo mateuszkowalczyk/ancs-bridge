@@ -123,6 +123,15 @@ impl ConfigurationStore {
         atomic_file::replace(&self.path, source.as_bytes(), 0o700)?;
         Ok(validated)
     }
+
+    pub fn remove(&self) -> Result<bool> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error)
+                .with_context(|| format!("removing configuration {}", self.path.display())),
+        }
+    }
 }
 
 fn absolute(value: Option<&OsStr>) -> Option<PathBuf> {
@@ -210,6 +219,16 @@ mod tests {
         let before = fs::read(store.path()).unwrap();
         assert!(store.save(&configuration("not-an-address")).is_err());
         assert_eq!(fs::read(store.path()).unwrap(), before);
+    }
+
+    #[test]
+    fn removal_is_idempotent() {
+        let directory = TestDirectory::new("configuration-remove");
+        let store = ConfigurationStore::new(directory.path().join("config.toml"));
+        assert!(!store.remove().unwrap());
+        store.save(&configuration("AA:BB:CC:DD:EE:FF")).unwrap();
+        assert!(store.remove().unwrap());
+        assert!(!store.remove().unwrap());
     }
 
     #[test]

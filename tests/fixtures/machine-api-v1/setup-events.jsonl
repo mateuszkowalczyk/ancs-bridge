@@ -1,0 +1,7 @@
+{"v":1,"event":"state","state":"checking-environment"}
+{"v":1,"event":"state","state":"waiting-for-iphone"}
+{"v":1,"event":"state","state":"verifying-ancs"}
+{"v":1,"event":"state","state":"applying-configuration"}
+{"v":1,"event":"confirmation-request","kind":"pairing","requestId":"opaque-id","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":"123456"}
+{"v":1,"event":"confirmation-request","kind":"existing-bond","requestId":"opaque-id","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":null}
+{"v":1,"event":"complete","address":"AA:BB:CC:DD:EE:FF"}

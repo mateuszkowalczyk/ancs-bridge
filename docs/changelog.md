@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-20 — Iteration 004
+
+Iteration: `docs/tasks/archived/iteration-004-setup-device-lifecycle.md`
+
+- Added stable machine-readable diagnostics and transactional iPhone setup with fresh pairing, existing-bond reuse, explicit repair, bounded confirmation, ANCS verification, and competing-device rejection.
+- Added optional exact-device iPhone audio suppression that preserves ANCS and unrelated AirPods playback and microphone behavior.
+- Added retry-safe teardown that can retain or forget only the configured bond while removing bridge-owned configuration and audio rules.
+
 ## 2026-08-19 — Iteration 003
 
 Iteration: `docs/tasks/archived/iteration-003-runtime-machine-api.md`

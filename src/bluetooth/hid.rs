@@ -142,6 +142,13 @@ pub fn runtime_advertisement() -> Advertisement {
     }
 }
 
+pub fn setup_advertisement() -> Advertisement {
+    Advertisement {
+        discoverable: Some(true),
+        ..runtime_advertisement()
+    }
+}
+
 fn encrypted_read(uuid: Uuid, value: &'static [u8]) -> Characteristic {
     Characteristic {
         uuid,
@@ -219,5 +226,17 @@ mod tests {
         assert!(advertisement.service_uuids.contains(&HID_SERVICE_UUID));
         assert!(advertisement.solicit_uuids.contains(&ANCS_SERVICE_UUID));
         assert!(advertisement.discoverable_timeout.is_none());
+    }
+
+    #[test]
+    fn setup_advertisement_is_discoverable_connectable_and_solicits_ancs() {
+        let advertisement = setup_advertisement();
+        assert_eq!(
+            advertisement.advertisement_type,
+            bluer::adv::Type::Peripheral
+        );
+        assert_eq!(advertisement.discoverable, Some(true));
+        assert!(advertisement.service_uuids.contains(&HID_SERVICE_UUID));
+        assert!(advertisement.solicit_uuids.contains(&ANCS_SERVICE_UUID));
     }
 }

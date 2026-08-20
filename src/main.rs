@@ -1,17 +1,23 @@
 use ancs_bridge::{
+    audio::config_home_from_environment,
     bluetooth::{supervisor::Supervisor, transport::BluerTransport},
     clock::TokioClock,
     config::ConfigurationStore,
+    diagnostics::{diagnose, probe},
     notification::FreedesktopSink,
+    service::SystemdUserServiceControl,
+    setup::{production::BluerSetupBackend, SetupOptions, SetupProtocol, StdinCommandInput},
     status::{
         status_output, PersistentStatusWriter, ProcfsProcessChecker, StatusIdentity, StatusStore,
         MACHINE_API_VERSION,
     },
+    teardown::{BluezBondCleanup, Teardown},
 };
 use anyhow::{anyhow, Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use serde::Serialize;
 use std::io::{self, Write};
+use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -39,6 +45,25 @@ enum Command {
         #[arg(long, required = true, action = ArgAction::SetTrue)]
         json: bool,
     },
+    /// Return stable environment and readiness diagnostics.
+    Doctor {
+        #[arg(long, required = true, action = ArgAction::SetTrue)]
+        json: bool,
+    },
+    /// Configure one explicitly confirmed iPhone.
+    Setup {
+        #[arg(long, required = true, action = ArgAction::SetTrue)]
+        jsonl: bool,
+        #[arg(long)]
+        disable_phone_audio: bool,
+        #[arg(long)]
+        repair: bool,
+    },
+    /// Remove bridge-owned configuration and optionally its exact bond.
+    Teardown {
+        #[arg(long)]
+        forget_device: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -64,10 +89,68 @@ async fn run() -> Result<()> {
             api_version: MACHINE_API_VERSION,
             version: env!("CARGO_PKG_VERSION"),
         }),
-        Command::Status { json: false } | Command::Version { json: false } => {
+        Command::Doctor { json: true } => doctor().await,
+        Command::Setup {
+            jsonl: true,
+            disable_phone_audio,
+            repair,
+        } => setup(disable_phone_audio, repair).await,
+        Command::Teardown { forget_device } => teardown(forget_device).await,
+        Command::Status { json: false }
+        | Command::Version { json: false }
+        | Command::Doctor { json: false }
+        | Command::Setup { jsonl: false, .. } => {
             unreachable!("clap requires --json")
         }
     }
+}
+
+async fn doctor() -> Result<()> {
+    let store = ConfigurationStore::from_environment()?;
+    let configuration = store.load()?;
+    let services = SystemdUserServiceControl;
+    let output = diagnose(&probe(configuration.as_ref(), &services).await?);
+    write_json(&output)?;
+    if output.ok {
+        Ok(())
+    } else {
+        Err(anyhow!("one or more diagnostic checks failed"))
+    }
+}
+
+async fn setup(disable_phone_audio: bool, repair: bool) -> Result<()> {
+    let store = ConfigurationStore::from_environment()?;
+    let configured = store.load()?;
+    let services = Arc::new(SystemdUserServiceControl);
+    let backend = BluerSetupBackend::new(store, configured, services);
+    let mut protocol = SetupProtocol::new(backend, TokioClock::default());
+    let mut input = StdinCommandInput::new();
+    let mut output = tokio::io::stdout();
+    let successful = protocol
+        .run(
+            &mut input,
+            &mut output,
+            SetupOptions {
+                disable_phone_audio,
+                repair,
+            },
+        )
+        .await;
+    if successful {
+        Ok(())
+    } else {
+        Err(anyhow!("setup did not complete"))
+    }
+}
+
+async fn teardown(forget_device: bool) -> Result<()> {
+    let lifecycle = Teardown::new(
+        ConfigurationStore::from_environment()?,
+        config_home_from_environment()?,
+        Arc::new(SystemdUserServiceControl),
+        Arc::new(BluezBondCleanup),
+    );
+    lifecycle.run(forget_device).await
 }
 
 async fn daemon() -> Result<()> {

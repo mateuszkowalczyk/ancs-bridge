@@ -6,8 +6,14 @@
 
 pub mod ancs;
 mod atomic_file;
+pub mod audio;
 pub mod bluetooth;
 pub mod clock;
 pub mod config;
+pub mod diagnostics;
+pub mod machine;
 pub mod notification;
+pub mod service;
+pub mod setup;
 pub mod status;
+pub mod teardown;

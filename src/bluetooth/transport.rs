@@ -8,7 +8,7 @@ use bluer::{
         remote::{Characteristic, CharacteristicWriteRequest},
         WriteOp,
     },
-    Adapter, Address, Session, Uuid,
+    Adapter, Address, Device, Session, Uuid,
 };
 use futures::{stream::BoxStream, StreamExt};
 use std::{
@@ -17,9 +17,42 @@ use std::{
 };
 use tokio::sync::Notify;
 
-const NOTIFICATION_SOURCE_UUID: Uuid = Uuid::from_u128(0x9fbf120d_6301_42d9_8c58_25e699a21dbd);
-const DATA_SOURCE_UUID: Uuid = Uuid::from_u128(0x22eac6e9_24d6_4bb5_be44_b36ace7c7bfb);
-const CONTROL_POINT_UUID: Uuid = Uuid::from_u128(0x69d1d8f3_45e1_49a8_9821_9bbdfdaad9d9);
+pub const NOTIFICATION_SOURCE_UUID: Uuid = Uuid::from_u128(0x9fbf120d_6301_42d9_8c58_25e699a21dbd);
+pub const DATA_SOURCE_UUID: Uuid = Uuid::from_u128(0x22eac6e9_24d6_4bb5_be44_b36ace7c7bfb);
+pub const CONTROL_POINT_UUID: Uuid = Uuid::from_u128(0x69d1d8f3_45e1_49a8_9821_9bbdfdaad9d9);
+
+/// Resolve a canonical bonded identity through Device1.Address instead of
+/// assuming BlueZ renamed the object path after LE privacy resolution.
+pub async fn device_by_identity(adapter: &Adapter, identity: Address) -> Result<Option<Device>> {
+    for path_address in adapter.device_addresses().await? {
+        let device = adapter.device(path_address)?;
+        if path_address == identity
+            || device.remote_address().await.unwrap_or(path_address) == identity
+        {
+            return Ok(Some(device));
+        }
+    }
+    Ok(None)
+}
+
+pub async fn has_complete_ancs(device: &bluer::Device) -> Result<bool> {
+    for service in device.services().await? {
+        if service.uuid().await? != hid::ANCS_SERVICE_UUID {
+            continue;
+        }
+        let mut found = [false; 3];
+        for characteristic in service.characteristics().await? {
+            match characteristic.uuid().await? {
+                NOTIFICATION_SOURCE_UUID => found[0] = true,
+                DATA_SOURCE_UUID => found[1] = true,
+                CONTROL_POINT_UUID => found[2] = true,
+                _ => {}
+            }
+        }
+        return Ok(found.into_iter().all(|value| value));
+    }
+    Ok(false)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransportObservation {
@@ -135,7 +168,9 @@ impl BluerTransport {
 
     async fn discover_characteristics(&mut self) -> Result<bool> {
         let adapter = self.adapter.as_ref().context("adapter unavailable")?;
-        let device = adapter.device(self.device_address)?;
+        let device = device_by_identity(adapter, self.device_address)
+            .await?
+            .context("configured Bluetooth identity is not present in BlueZ")?;
         let mut notification_source = None;
         let mut data_source = None;
         let mut control_point = None;
@@ -179,7 +214,9 @@ impl BluetoothTransport for BluerTransport {
             return Ok(TransportObservation::Advertising);
         }
         let adapter = self.adapter.as_ref().context("adapter unavailable")?;
-        let device = adapter.device(self.device_address)?;
+        let device = device_by_identity(adapter, self.device_address)
+            .await?
+            .context("configured Bluetooth identity is not present in BlueZ")?;
         if !device.is_paired().await? {
             self.end_ancs_session();
             return Ok(TransportObservation::DeviceNotBonded);

@@ -27,14 +27,36 @@ impl Drop for TempGuard {
 
 /// Atomically replace one private file in an owner-only directory.
 pub(crate) fn replace(path: &Path, bytes: &[u8], directory_mode: u32) -> Result<()> {
+    replace_with_directory_policy(path, bytes, directory_mode, true)
+}
+
+/// Atomically replace one private file, making missing directories private
+/// while preserving permissions on an existing parent directory.
+pub(crate) fn replace_preserving_directories(
+    path: &Path,
+    bytes: &[u8],
+    directory_mode: u32,
+) -> Result<()> {
+    replace_with_directory_policy(path, bytes, directory_mode, false)
+}
+
+fn replace_with_directory_policy(
+    path: &Path,
+    bytes: &[u8],
+    directory_mode: u32,
+    rewrite_existing_parent: bool,
+) -> Result<()> {
     let parent = path
         .parent()
         .filter(|value| !value.as_os_str().is_empty())
         .context("atomic file path has no parent directory")?;
+    let parent_existed = parent.exists();
     fs::create_dir_all(parent)
         .with_context(|| format!("creating directory {}", parent.display()))?;
-    fs::set_permissions(parent, Permissions::from_mode(directory_mode))
-        .with_context(|| format!("setting directory permissions on {}", parent.display()))?;
+    if rewrite_existing_parent || !parent_existed {
+        fs::set_permissions(parent, Permissions::from_mode(directory_mode))
+            .with_context(|| format!("setting directory permissions on {}", parent.display()))?;
+    }
 
     let file_name = path
         .file_name()
