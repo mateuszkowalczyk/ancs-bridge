@@ -298,7 +298,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        ancs::codec::{Category, EventFlags},
+        ancs::codec::EventFlags,
         bluetooth::transport::{FakeBluetoothTransport, TransportPacket},
         clock::FakeClock,
         notification::{
@@ -317,7 +317,7 @@ mod tests {
                 EventKind::Removed => 2,
             },
             0,
-            Category::Other as u8,
+            0,
             1,
             uid as u8,
             (uid >> 8) as u8,

@@ -43,8 +43,12 @@ recoverable and cannot terminate the daemon supervisor.
 ## Event and attribute processing
 
 Notification Source events are exactly eight bytes. The daemon validates event
-ID, flags, category fields, and little-endian notification UID before acting on
-the event. Unknown or malformed values are rejected without panicking.
+ID, category fields, and little-endian notification UID before acting on the
+event. It preserves the complete event-flags bitmask, interprets the flags it
+knows, and tolerates reserved flag bits for compatibility with newer iOS
+versions. It likewise preserves reserved category IDs without assigning them
+new semantics. Unknown event IDs and malformed values are rejected without
+panicking.
 
 For Added and relevant Modified events, the daemon retrieves:
 

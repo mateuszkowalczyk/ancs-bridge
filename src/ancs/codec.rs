@@ -19,20 +19,20 @@ pub enum EventKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u8)]
 pub enum Category {
-    Other = 0,
-    IncomingCall = 1,
-    MissedCall = 2,
-    Voicemail = 3,
-    Social = 4,
-    Schedule = 5,
-    Email = 6,
-    News = 7,
-    HealthAndFitness = 8,
-    BusinessAndFinance = 9,
-    Location = 10,
-    Entertainment = 11,
+    Other,
+    IncomingCall,
+    MissedCall,
+    Voicemail,
+    Social,
+    Schedule,
+    Email,
+    News,
+    HealthAndFitness,
+    BusinessAndFinance,
+    Location,
+    Entertainment,
+    Reserved(u8),
 }
 
 impl TryFrom<u8> for Category {
@@ -52,7 +52,7 @@ impl TryFrom<u8> for Category {
             9 => Self::BusinessAndFinance,
             10 => Self::Location,
             11 => Self::Entertainment,
-            other => return Err(CodecError::InvalidCategory(other)),
+            other => Self::Reserved(other),
         })
     }
 }
@@ -66,7 +66,6 @@ impl EventFlags {
     pub const PRE_EXISTING: u8 = 1 << 2;
     pub const POSITIVE_ACTION: u8 = 1 << 3;
     pub const NEGATIVE_ACTION: u8 = 1 << 4;
-    const KNOWN: u8 = 0x1f;
 
     pub fn bits(self) -> u8 {
         self.0
@@ -103,9 +102,6 @@ impl NotificationEvent {
             2 => EventKind::Removed,
             other => return Err(CodecError::InvalidEvent(other)),
         };
-        if bytes[1] & !EventFlags::KNOWN != 0 {
-            return Err(CodecError::InvalidFlags(bytes[1]));
-        }
         Ok(Self {
             kind,
             flags: EventFlags(bytes[1]),
@@ -351,8 +347,6 @@ fn parse_attribute(
 pub enum CodecError {
     InvalidEventLength(usize),
     InvalidEvent(u8),
-    InvalidFlags(u8),
-    InvalidCategory(u8),
     InvalidAppIdentifier,
     UnexpectedCommand(u8),
     WrongUid { expected_uid: u32, uid: u32 },
@@ -421,14 +415,11 @@ mod tests {
             NotificationEvent::parse(&[3, 0, 0, 0, 0, 0, 0, 0]),
             Err(CodecError::InvalidEvent(3))
         ));
-        assert!(matches!(
-            NotificationEvent::parse(&[0, 0x80, 0, 0, 0, 0, 0, 0]),
-            Err(CodecError::InvalidFlags(0x80))
-        ));
-        assert!(matches!(
-            NotificationEvent::parse(&[0, 0, 12, 0, 0, 0, 0, 0]),
-            Err(CodecError::InvalidCategory(12))
-        ));
+        let future_flags = NotificationEvent::parse(&[0, 0x35, 0, 0, 0, 0, 0, 0]).unwrap();
+        assert_eq!(future_flags.flags.bits(), 0x35);
+        assert!(future_flags.flags.is_pre_existing());
+        let future_category = NotificationEvent::parse(&[0, 0, 12, 0, 0, 0, 0, 0]).unwrap();
+        assert_eq!(future_category.category, Category::Reserved(12));
     }
 
     #[test]

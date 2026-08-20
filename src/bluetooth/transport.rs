@@ -21,6 +21,10 @@ pub const NOTIFICATION_SOURCE_UUID: Uuid = Uuid::from_u128(0x9fbf120d_6301_42d9_
 pub const DATA_SOURCE_UUID: Uuid = Uuid::from_u128(0x22eac6e9_24d6_4bb5_be44_b36ace7c7bfb);
 pub const CONTROL_POINT_UUID: Uuid = Uuid::from_u128(0x69d1d8f3_45e1_49a8_9821_9bbdfdaad9d9);
 
+fn advertisement_count_contains_registration(active: u8, baseline: u8) -> bool {
+    active > baseline
+}
+
 /// Resolve a canonical bonded identity through Device1.Address instead of
 /// assuming BlueZ renamed the object path after LE privacy resolution.
 pub async fn device_by_identity(adapter: &Adapter, identity: Address) -> Result<Option<Device>> {
@@ -84,6 +88,10 @@ pub trait BluetoothTransport: Send {
     async fn write_control(&mut self, value: &[u8], operation: ControlWrite) -> Result<()>;
     fn end_ancs_session(&mut self);
     fn reset_bluez_session(&mut self);
+
+    async fn shutdown(&mut self) {
+        self.end_ancs_session();
+    }
 }
 
 struct RegistrationOwner<A, B> {
@@ -112,6 +120,7 @@ pub struct BluerTransport {
     session: Option<Session>,
     adapter: Option<Adapter>,
     registrations: Option<Registrations>,
+    advertising_baseline: Option<u8>,
     characteristics: Option<Characteristics>,
     subscriptions: Option<Subscriptions>,
 }
@@ -124,6 +133,7 @@ impl BluerTransport {
             session: None,
             adapter: None,
             registrations: None,
+            advertising_baseline: None,
             characteristics: None,
             subscriptions: None,
         }
@@ -134,13 +144,36 @@ impl BluerTransport {
             let session = Session::new()
                 .await
                 .context("connecting to BlueZ system bus")?;
-            let adapter = session
+            self.session = Some(session);
+        }
+        if self.adapter.is_none() {
+            let adapter = self
+                .session
+                .as_ref()
+                .context("BlueZ session unavailable")?
                 .adapter(&self.adapter_name)
                 .context("locating configured Bluetooth adapter")?;
-            self.session = Some(session);
             self.adapter = Some(adapter);
         }
         Ok(())
+    }
+
+    fn invalidate_bluez_objects(&mut self) {
+        self.end_ancs_session();
+        self.registrations = None;
+        self.advertising_baseline = None;
+        self.adapter = None;
+    }
+
+    async fn registrations_are_live(&mut self) -> Result<bool> {
+        let Some(baseline) = self.advertising_baseline else {
+            return Ok(self.registrations.is_none());
+        };
+        let adapter = self.adapter.as_ref().context("adapter unavailable")?;
+        Ok(advertisement_count_contains_registration(
+            adapter.active_advertising_instances().await?,
+            baseline,
+        ))
     }
 
     async fn ensure_registrations(&mut self) -> Result<bool> {
@@ -148,6 +181,7 @@ impl BluerTransport {
             return Ok(false);
         }
         let adapter = self.adapter.as_ref().context("adapter unavailable")?;
+        let advertising_baseline = adapter.active_advertising_instances().await?;
         let application = adapter
             .serve_gatt_application(hid::application())
             .await
@@ -163,6 +197,7 @@ impl BluerTransport {
             _application: application,
             _advertisement: advertisement,
         });
+        self.advertising_baseline = Some(advertising_baseline);
         Ok(true)
     }
 
@@ -209,6 +244,14 @@ impl BluetoothTransport for BluerTransport {
         let adapter = self.adapter.as_ref().context("adapter unavailable")?;
         if !adapter.is_powered().await? {
             return Ok(TransportObservation::AdapterPoweredOff);
+        }
+        if self.registrations.is_some() && !self.registrations_are_live().await? {
+            tracing::info!(
+                event_code = "bluez-registrations-lost",
+                "recreating registrations missing from BlueZ"
+            );
+            self.invalidate_bluez_objects();
+            self.ensure_bluez().await?;
         }
         if self.ensure_registrations().await? {
             return Ok(TransportObservation::Advertising);
@@ -300,8 +343,43 @@ impl BluetoothTransport for BluerTransport {
     fn reset_bluez_session(&mut self) {
         self.end_ancs_session();
         self.registrations = None;
+        self.advertising_baseline = None;
         self.adapter = None;
         self.session = None;
+    }
+
+    async fn shutdown(&mut self) {
+        // Dropping bluer notification streams schedules StopNotify on its
+        // session task. Keep the session and characteristic handles alive
+        // until BlueZ confirms both CCCDs are disabled so an immediate
+        // systemd restart cannot inherit a stale Notifying=true session.
+        self.subscriptions = None;
+        let mut stopped = false;
+        for _ in 0..40 {
+            let Some(characteristics) = self.characteristics.as_ref() else {
+                stopped = true;
+                break;
+            };
+            let notification_source = characteristics.notification_source.notifying().await;
+            let data_source = characteristics.data_source.notifying().await;
+            if notification_source.as_ref().ok().copied().flatten() != Some(true)
+                && data_source.as_ref().ok().copied().flatten() != Some(true)
+            {
+                stopped = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        if !stopped {
+            tracing::warn!(
+                error_code = "notify-shutdown-timeout",
+                "timed out waiting for ANCS notifications to stop"
+            );
+        }
+        self.characteristics = None;
+        self.registrations = None;
+        self.advertising_baseline = None;
+        tokio::task::yield_now().await;
     }
 }
 
@@ -479,5 +557,14 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         drop(owner);
         assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn advertisement_count_detects_lost_registration() {
+        assert!(advertisement_count_contains_registration(1, 0));
+        assert!(advertisement_count_contains_registration(3, 2));
+        assert!(!advertisement_count_contains_registration(0, 0));
+        assert!(!advertisement_count_contains_registration(2, 2));
+        assert!(!advertisement_count_contains_registration(1, 2));
     }
 }

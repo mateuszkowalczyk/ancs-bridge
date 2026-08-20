@@ -167,14 +167,29 @@ async fn daemon() -> Result<()> {
     let status_store = StatusStore::from_environment()?;
     let status_writer =
         PersistentStatusWriter::new(status_store, StatusIdentity::from(&configuration));
-    Supervisor::new(
+    let mut supervisor = Supervisor::new(
         BluerTransport::new(configuration.adapter, configuration.device_address),
         FreedesktopSink::default(),
         TokioClock::default(),
         status_writer,
-    )
-    .run()
-    .await
+    );
+    tokio::select! {
+        result = supervisor.run() => result,
+        signal = daemon_shutdown_signal() => {
+            signal?;
+            supervisor.shutdown().await;
+            Ok(())
+        }
+    }
+}
+
+async fn daemon_shutdown_signal() -> Result<()> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("registering SIGTERM handler")?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result.context("waiting for interrupt signal"),
+        _ = terminate.recv() => Ok(()),
+    }
 }
 
 fn status() -> Result<()> {

@@ -247,6 +247,67 @@ and send a second notification after `ready` returns. The test has a 15-minute
 overall timeout and never selects, pairs, powers, or explicitly connects a
 device.
 
+## Runtime reliability acceptance
+
+The service-managed hardware matrix is split into resumable, operator-gated
+stages. It requires the installed and enabled user service, the configured
+iPhone, a second device that can send notifications, and AirPods for the final
+audio check. Run a stage from the trusted source checkout with:
+
+```console
+ANCS_BRIDGE_ACCEPTANCE=1 \
+ANCS_BRIDGE_ACCEPTANCE_STAGE=baseline \
+cargo test --offline --test hardware_acceptance \
+  service_runtime_reliability_acceptance \
+  -- --ignored --nocapture --test-threads=1
+```
+
+Replace `baseline` with each stage in this order:
+
+1. `notifications` — follows prompts for TickTick and Apple Reminders
+   notifications while locked/unlocked with iPhone previews set to Always,
+   When Unlocked, and Never. These locally triggered sources avoid requiring a
+   second Messages account.
+2. `lifecycle` — creates a due Apple Reminder on the iPhone, edits the synced
+   reminder from a same-account iPad, and clears it on the iPhone to confirm
+   live Added, Modified, and Removed create/replace/close behavior.
+3. `service-restart`, `bluez-restart`, and `adapter-cycle` — exercise process,
+   BlueZ, and controller recovery. The BlueZ stage prompts you to run its
+   `sudo systemctl restart bluetooth.service` command in another terminal;
+   every system-affecting action is announced before it runs.
+4. `iphone-cycle` and `range-loss` — require the prompted physical iPhone
+   actions and must recover passively without reopening its Omarchy entry.
+5. `suspend` — leave the test process open, suspend or close the lid, resume
+   and unlock, then press Enter so the same process verifies reconciliation.
+6. `endurance` — passively observes a one-tap iPhone Shortcut that repeats:
+   Bluetooth off, wait 10 seconds, Bluetooth on, wait 30 seconds. Put those
+   four actions inside a Repeat block set to 20. The desktop never calls
+   `Device1.Connect()`; only starting the Shortcut and the pre-run/post-run
+   notification canaries require operator action. If the Shortcut ends early,
+   turn Bluetooth on before retrying the stage.
+7. `privacy` — accepts a user-chosen canary with terminal echo disabled, waits
+   for its delivery, and scans configuration, runtime status/files, CLI and
+   service diagnostics, the current-boot journal, installed artifacts, and
+   setup diagnostic fixtures without writing the canary or scanned content.
+8. `final` — verifies the service, adapter, bonds/audio rule, WirePlumber, and
+   configured-phone audio-card absence, then asks for an AirPods playback and
+   microphone confirmation.
+
+For reboot/login acceptance, first finish a passing `baseline` stage and
+confirm the service is enabled. Reboot normally, return to this checkout after
+login, and run the same command with `ANCS_BRIDGE_ACCEPTANCE_STAGE=reboot`.
+The post-reboot stage proves automatic service startup, `ready`, and one fresh
+notification without relying on a pre-reboot test process or temporary file.
+
+Automated waits are bounded: ordinary readiness and notification steps allow
+three minutes, disconnect observation allows 45 seconds, and range-return,
+suspend, and post-login recovery allow five minutes. Time spent at an explicit
+operator prompt is intentionally unbounded and can be cancelled with Ctrl-C;
+rerun only that stage afterward. Stage output is metadata-only and includes
+state, PID/restart count, configuration digest, bond count, adapter/audio
+invariants, RSS/file-descriptor counts, and pass/fail markers—never notification
+titles or bodies.
+
 ## Spike boundary
 
 The `spike/` crate and the archived feasibility report are experimental

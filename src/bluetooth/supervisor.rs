@@ -143,6 +143,9 @@ where
                     .await;
             }
             TransportObservation::Advertising => {
+                self.end_session().await;
+                self.snapshot.connected = false;
+                self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::Advertising, None).await;
             }
             TransportObservation::DeviceNotBonded => {
@@ -154,7 +157,15 @@ where
                     .await;
             }
             TransportObservation::WaitingForPhone => {
+                let had_active_session = self.session_active;
                 self.end_session().await;
+                if had_active_session {
+                    tracing::info!(
+                        event_code = "phone-disconnected",
+                        "recreating BlueZ registrations after active phone disconnect"
+                    );
+                    self.transport.reset_bluez_session();
+                }
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::WaitingForPhone, None).await;
@@ -218,7 +229,13 @@ where
                         self.publish_current().await;
                     }
                 }
-                Err(_) => {
+                Err(error) => {
+                    tracing::warn!(
+                        error = ?error,
+                        packet_length = bytes.len(),
+                        error_code = "malformed-notification-source",
+                        "discarded malformed ANCS notification event"
+                    );
                     self.snapshot.record_error("malformed-notification-source");
                     self.publish_current().await;
                 }
@@ -262,6 +279,17 @@ where
                 _ => self.clock.sleep(RECONCILE_INTERVAL).await,
             }
         }
+    }
+
+    pub async fn shutdown(&mut self) {
+        if self.session_active {
+            self.session.end().await;
+            self.session_active = false;
+        }
+        self.sync_session_metadata();
+        self.snapshot.subscribed = false;
+        self.snapshot.ancs_available = false;
+        self.transport.shutdown().await;
     }
 }
 
@@ -380,7 +408,15 @@ mod tests {
                 RuntimeState::Ready,
             ]
         );
-        assert!(!probe.calls().contains(&"connect-device"));
+        let calls = probe.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| **call == "reset-bluez-session")
+                .count(),
+            1
+        );
+        assert!(!calls.contains(&"connect-device"));
     }
 
     #[tokio::test]
@@ -418,6 +454,93 @@ mod tests {
         assert_eq!(supervisor.current_backoff(), Duration::from_secs(1));
         supervisor.reconcile_once().await.unwrap();
         assert_eq!(supervisor.snapshot().state, RuntimeState::Backoff);
+        assert_eq!(
+            probe
+                .calls()
+                .iter()
+                .filter(|call| **call == "reset-bluez-session")
+                .count(),
+            7
+        );
+        assert!(!probe.calls().contains(&"connect-device"));
+    }
+
+    #[tokio::test]
+    async fn adapter_power_cycle_ends_the_session_and_resubscribes_passively() {
+        let probe = FakeBluetoothTransport::default();
+        for observation in [
+            TransportObservation::Available,
+            TransportObservation::AdapterPoweredOff,
+            TransportObservation::Available,
+        ] {
+            probe.observation(observation);
+        }
+        let mut supervisor = supervisor(
+            probe.clone(),
+            FakeClock::default(),
+            FakeStatusWriter::default(),
+        );
+
+        supervisor.reconcile_once().await.unwrap();
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
+        supervisor.reconcile_once().await.unwrap();
+        assert_eq!(supervisor.snapshot().state, RuntimeState::WaitingForAdapter);
+        assert_eq!(
+            supervisor.snapshot().reason_code,
+            Some("adapter-powered-off")
+        );
+        supervisor.reconcile_once().await.unwrap();
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
+
+        let calls = probe.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| **call == "subscribe-data-source")
+                .count(),
+            2
+        );
+        assert!(calls.contains(&"end-ancs-session"));
+        assert!(!calls.contains(&"reset-bluez-session"));
+        assert!(!calls.contains(&"connect-device"));
+    }
+
+    #[tokio::test]
+    async fn registration_recreation_clears_stale_connection_metadata() {
+        let probe = FakeBluetoothTransport::default();
+        probe.observation(TransportObservation::Available);
+        probe.observation(TransportObservation::Advertising);
+        let mut supervisor = supervisor(probe, FakeClock::default(), FakeStatusWriter::default());
+
+        supervisor.reconcile_once().await.unwrap();
+        assert!(supervisor.snapshot().connected);
+        assert!(supervisor.snapshot().subscribed);
+        supervisor.reconcile_once().await.unwrap();
+
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Advertising);
+        assert!(!supervisor.snapshot().connected);
+        assert!(!supervisor.snapshot().services_resolved);
+        assert!(!supervisor.snapshot().ancs_available);
+        assert!(!supervisor.snapshot().subscribed);
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_ends_the_active_session() {
+        let probe = FakeBluetoothTransport::default();
+        probe.observation(TransportObservation::Available);
+        let mut supervisor = supervisor(
+            probe.clone(),
+            FakeClock::default(),
+            FakeStatusWriter::default(),
+        );
+        supervisor.reconcile_once().await.unwrap();
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
+
+        supervisor.shutdown().await;
+
+        assert!(probe.calls().contains(&"end-ancs-session"));
+        assert!(!supervisor.snapshot().subscribed);
+        assert!(!supervisor.snapshot().ancs_available);
     }
 
     #[tokio::test]

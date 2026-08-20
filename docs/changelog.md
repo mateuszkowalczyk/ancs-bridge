@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-20 — Iteration 006
+
+Iteration: `docs/tasks/archived/iteration-006-runtime-reliability-acceptance.md`
+
+- Added a resumable, metadata-only hardware acceptance suite covering notification previews and lifecycle, privacy, service and Bluetooth disruptions, suspend recovery, and reconnect endurance.
+- Hardened passive recovery across daemon and BlueZ restarts, lost registrations, active-phone disconnects, and suspend without generic Bluetooth connection attempts.
+- Added forward compatibility for reserved iOS 26.6 ANCS flags and categories, and validated exact-device iPhone audio suppression with ANCS readiness and working AirPods playback and microphone.
+
 ## 2026-08-20 — Iteration 005
 
 Iteration: `docs/tasks/archived/iteration-005-systemd-user-service.md`
