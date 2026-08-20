@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-20 — Iteration 005
+
+Iteration: `docs/tasks/archived/iteration-005-systemd-user-service.md`
+
+- Added a hardened systemd user service with explicit activation, automatic login startup, private runtime state, and restart-on-failure recovery.
+- Added reproducible source-install staging, exact unit/artifact validation, and reversible manual installation and service lifecycle documentation.
+- Validated service-managed iPhone notification forwarding, deliberate lifecycle operations, configuration and bond preservation, and payload-free journal/status evidence.
+
 ## 2026-08-20 — Iteration 004
 
 Iteration: `docs/tasks/archived/iteration-004-setup-device-lifecycle.md`

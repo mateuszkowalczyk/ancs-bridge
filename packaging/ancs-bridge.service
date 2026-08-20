@@ -1,0 +1,17 @@
+[Unit]
+Description=Forward iPhone ANCS notifications to the desktop
+Documentation=https://github.com/mateuszkowalczyk/ancs-bridge
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ancs-bridge daemon
+Restart=on-failure
+RestartSec=3s
+RuntimeDirectory=ancs-bridge
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

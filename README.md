@@ -121,6 +121,62 @@ unit exists, removes and reloads the exact audio rule, optionally forgets only
 the configured bond, then deletes configuration last. Any required cleanup
 failure retains configuration so the same command can be retried safely.
 
+## systemd user service
+
+The foreground daemon remains useful for development:
+
+```console
+./target/release/ancs-bridge daemon
+```
+
+Until the source-built AUR package is available, build and manually install
+the three final artifacts from a trusted checkout:
+
+```console
+cargo build --offline --locked --release
+sudo install -Dm755 target/release/ancs-bridge /usr/bin/ancs-bridge
+sudo install -Dm644 LICENSE /usr/share/licenses/ancs-bridge/LICENSE
+sudo install -Dm644 packaging/ancs-bridge.service /usr/lib/systemd/user/ancs-bridge.service
+systemctl --user daemon-reload
+```
+
+Installation does not enable the service or change pairing/configuration. Run
+setup successfully first, then explicitly enable automatic login startup:
+
+```console
+systemctl --user enable --now ancs-bridge.service
+systemctl --user status --no-pager ancs-bridge.service
+ancs-bridge status --json
+journalctl --user-unit=ancs-bridge.service --no-pager
+```
+
+An unexpected daemon failure restarts after three seconds. Deliberate stop,
+start, disable, and re-enable operations are explicit:
+
+```console
+systemctl --user stop ancs-bridge.service
+systemctl --user start ancs-bridge.service
+systemctl --user disable --now ancs-bridge.service
+systemctl --user enable --now ancs-bridge.service
+```
+
+For bridge-owned configuration, optional audio-rule, and optional exact bond
+cleanup, run `ancs-bridge teardown [--forget-device]` before uninstalling.
+Manual binary/unit removal alone intentionally preserves those user resources:
+
+```console
+systemctl --user disable --now ancs-bridge.service
+sudo rm -f /usr/bin/ancs-bridge
+sudo rm -f /usr/lib/systemd/user/ancs-bridge.service
+sudo rm -f /usr/share/licenses/ancs-bridge/LICENSE
+systemctl --user daemon-reload
+```
+
+`packaging/stage-install.sh` reproduces the artifact layout under a non-root
+`DESTDIR` for inspection; it intentionally refuses `/` and performs no service
+or user-state changes. AUR packaging, install hooks, `.SRCINFO`, and release
+publication remain deferred.
+
 ## Production modules
 
 - `bluetooth::hid` constructs the encrypted, keyboard-shaped HID-over-GATT
