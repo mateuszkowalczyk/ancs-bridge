@@ -224,10 +224,7 @@ where
             TransportPacket::NotificationSource(bytes) => match NotificationEvent::parse(&bytes) {
                 Ok(event) => {
                     self.session.ingest(event).await;
-                    while self.session.process_next(&mut self.transport).await? {}
-                    if self.sync_session_metadata() {
-                        self.publish_current().await;
-                    }
+                    self.process_one_pending().await?;
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -252,6 +249,14 @@ where
         Ok(())
     }
 
+    async fn process_one_pending(&mut self) -> Result<()> {
+        self.session.process_next(&mut self.transport).await?;
+        if self.sync_session_metadata() {
+            self.publish_current().await;
+        }
+        Ok(())
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         self.publish_current().await;
         loop {
@@ -262,6 +267,14 @@ where
                     self.advance_backoff();
                 }
                 RuntimeState::Ready => {
+                    if self.session.pending_len() > 0 {
+                        if self.process_one_pending().await.is_err() {
+                            self.snapshot.record_error("ancs-stream-failed");
+                            self.end_session().await;
+                            self.publish_current().await;
+                        }
+                        continue;
+                    }
                     let clock = self.clock.clone();
                     let reconcile = clock.sleep(RECONCILE_INTERVAL);
                     tokio::pin!(reconcile);
@@ -606,5 +619,58 @@ mod tests {
         supervisor.reconcile_once().await.unwrap();
         assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
         assert_eq!(status.values().last().unwrap().state, RuntimeState::Ready);
+    }
+
+    #[tokio::test]
+    async fn continuous_ancs_work_returns_to_reconciliation_between_requests() {
+        let probe = FakeBluetoothTransport::default();
+        probe.wait_when_empty();
+        let status = FakeStatusWriter::default();
+        let mut supervisor = supervisor(probe.clone(), FakeClock::default(), status.clone());
+
+        probe.packet(TransportPacket::NotificationSource(vec![
+            0, 0, 0, 1, 1, 0, 0, 0,
+        ]));
+        probe.packet(TransportPacket::NotificationSource(vec![
+            0, 0, 0, 1, 2, 0, 0, 0,
+        ]));
+        probe.packet(TransportPacket::DataSource(notification_response(
+            1, "app.one",
+        )));
+        probe.packet(TransportPacket::DataSource(app_response("app.one", "One")));
+        probe.packet(TransportPacket::DataSource(notification_response(
+            2, "app.two",
+        )));
+        probe.packet(TransportPacket::DataSource(app_response("app.two", "Two")));
+
+        let task = tokio::spawn(async move { supervisor.run().await });
+        for _ in 0..100 {
+            if status
+                .values()
+                .last()
+                .is_some_and(|value| value.delivered_count == 2)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        let _ = task.await;
+
+        let calls = probe.calls();
+        let second_reconcile = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| **call == "reconcile")
+            .nth(1)
+            .map(|(index, _)| index)
+            .expect("second reconciliation");
+        assert_eq!(
+            calls[..second_reconcile]
+                .iter()
+                .filter(|call| **call == "write-control")
+                .count(),
+            2
+        );
     }
 }

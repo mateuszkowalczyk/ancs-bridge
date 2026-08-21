@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 || -z "$1" || "$1" == "/" ]]; then
+if [[ $# -ne 1 || -z "$1" ]]; then
   echo "usage: ANCS_BRIDGE_BINARY=/path/to/ancs-bridge $0 DESTDIR" >&2
   echo "DESTDIR must be a non-root staging directory" >&2
   exit 2
@@ -9,7 +9,13 @@ fi
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 binary="${ANCS_BRIDGE_BINARY:-${repository_root}/target/release/ancs-bridge}"
-destination="$1"
+destination="$(realpath -m -- "$1")"
+
+if [[ "$destination" == "/" ]]; then
+  echo "usage: ANCS_BRIDGE_BINARY=/path/to/ancs-bridge $0 DESTDIR" >&2
+  echo "DESTDIR must be a non-root staging directory" >&2
+  exit 2
+fi
 
 if [[ ! -f "$binary" || ! -x "$binary" ]]; then
   echo "ancs-bridge binary is missing or not executable: $binary" >&2

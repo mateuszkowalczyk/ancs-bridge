@@ -1,4 +1,7 @@
-use ancs_bridge::{audio::AudioRule, config::ConfigurationStore};
+use ancs_bridge::{
+    audio::AudioRule,
+    config::{ConfigurationStore, ValidatedConfiguration},
+};
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::{
@@ -23,6 +26,7 @@ struct AcceptanceSnapshot {
     adapter_powered: bool,
     suppress_phone_audio: bool,
     audio_rule_bytes: Option<Vec<u8>>,
+    audio_role_rule_bytes: Option<Vec<u8>>,
     wireplumber_healthy: bool,
     service_active: bool,
     service_enabled: bool,
@@ -52,8 +56,13 @@ impl AcceptanceSnapshot {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error).context("reading configured audio rule"),
         };
+        let audio_role_rule_bytes = match fs::read(audio_rule.role_path()) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error).context("reading Bluetooth role policy"),
+        };
         let bonds = normalized_lines(&checked_stdout("bluetoothctl", &["devices", "Paired"])?);
-        let adapter_path = format!("/org/bluez/{}", configuration.adapter);
+        let adapter_path = resolved_adapter_path(&configuration)?;
         let adapter_powered = checked_stdout(
             "busctl",
             &[
@@ -89,6 +98,7 @@ impl AcceptanceSnapshot {
             adapter_powered,
             suppress_phone_audio: configuration.suppress_phone_audio,
             audio_rule_bytes,
+            audio_role_rule_bytes,
             wireplumber_healthy,
             service_active,
             service_enabled,
@@ -128,6 +138,7 @@ impl AcceptanceSnapshot {
         }
         if self.suppress_phone_audio != baseline.suppress_phone_audio
             || self.audio_rule_bytes != baseline.audio_rule_bytes
+            || self.audio_role_rule_bytes != baseline.audio_role_rule_bytes
         {
             bail!("phone-audio suppression intent or rule changed during acceptance");
         }
@@ -157,6 +168,59 @@ impl AcceptanceSnapshot {
             self.transition.is_some(),
             self.notification.is_some(),
         );
+    }
+}
+
+fn resolved_adapter_path(configuration: &ValidatedConfiguration) -> Result<String> {
+    let Some(identity) = configuration.adapter_address else {
+        return Ok(format!("/org/bluez/{}", configuration.adapter));
+    };
+    let tree = checked_stdout("busctl", &["--system", "tree", "org.bluez"])?;
+    let identity = identity.to_string();
+    let mut matches = Vec::new();
+    for path in direct_adapter_paths(&tree) {
+        let address = checked_stdout(
+            "busctl",
+            &[
+                "--system",
+                "get-property",
+                "org.bluez",
+                path,
+                "org.bluez.Adapter1",
+                "Address",
+            ],
+        )?;
+        if address
+            .split_ascii_whitespace()
+            .last()
+            .map(|value| value.trim_matches('"'))
+            == Some(identity.as_str())
+        {
+            matches.push((path.to_owned(), identity.clone()));
+        }
+    }
+    matching_adapter_path(&identity, &matches)
+        .map(str::to_owned)
+        .context("configured Bluetooth adapter identity is missing or ambiguous in BlueZ")
+}
+
+fn direct_adapter_paths(tree: &str) -> impl Iterator<Item = &str> {
+    tree.split_ascii_whitespace().filter(|value| {
+        value
+            .strip_prefix("/org/bluez/hci")
+            .is_some_and(|suffix| !suffix.is_empty() && !suffix.contains('/'))
+    })
+}
+
+fn matching_adapter_path<'a>(identity: &str, adapters: &'a [(String, String)]) -> Option<&'a str> {
+    let matches = adapters
+        .iter()
+        .filter(|(_, address)| address == identity)
+        .map(|(path, _)| path.as_str())
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [only] => Some(*only),
+        _ => None,
     }
 }
 
@@ -271,14 +335,34 @@ fn bluez_restart_stage() -> Result<()> {
 
 fn adapter_cycle_stage() -> Result<()> {
     let baseline = wait_for_ready(READY_TIMEOUT)?;
+    let configuration = ConfigurationStore::from_environment()?
+        .load()?
+        .context("ancs-bridge must be configured before adapter-cycle acceptance")?;
+    let adapter_path = resolved_adapter_path(&configuration)?;
     prompt("This will power the selected Bluetooth adapter off. Press Enter to continue, or Ctrl-C to cancel.")?;
-    checked_status("bluetoothctl", &["power", "off"])?;
+    set_adapter_powered(&adapter_path, false)?;
     wait_for_not_ready(DISCONNECT_TIMEOUT)?;
     prompt("The adapter is off. Press Enter to restore adapter power.")?;
-    checked_status("bluetoothctl", &["power", "on"])?;
+    set_adapter_powered(&adapter_path, true)?;
     let recovered = wait_for_ready(READY_TIMEOUT)?;
     recovered.assert_invariants(&baseline)?;
     recovery_canary("adapter-cycle", &baseline, &recovered)
+}
+
+fn set_adapter_powered(adapter_path: &str, powered: bool) -> Result<()> {
+    checked_status(
+        "busctl",
+        &[
+            "--system",
+            "set-property",
+            "org.bluez",
+            adapter_path,
+            "org.bluez.Adapter1",
+            "Powered",
+            "b",
+            if powered { "true" } else { "false" },
+        ],
+    )
 }
 
 fn iphone_cycle_stage() -> Result<()> {
@@ -448,15 +532,60 @@ fn final_stage() -> Result<()> {
     let configuration = ConfigurationStore::from_environment()?
         .load()?
         .context("ancs-bridge is not configured")?;
+    let audio_rule = AudioRule::from_environment(configuration.device_address)?;
+    if !configuration.suppress_phone_audio
+        || snapshot.audio_rule_bytes.as_deref() != Some(audio_rule.content().as_bytes())
+        || snapshot.audio_role_rule_bytes.as_deref() != Some(audio_rule.role_content().as_bytes())
+    {
+        bail!("phone-audio suppression intent or canonical rules are missing");
+    }
     let pipewire = checked_stdout("wpctl", &["status", "-n"])?;
     let identity = configuration.device_address.to_string().replace(':', "_");
-    if pipewire.contains(&format!("bluez_card.{identity}")) {
-        bail!("configured iPhone remains visible as a PipeWire audio card");
+    if pipewire.contains(&format!("bluez_output.{identity}"))
+        || pipewire.contains(&format!("bluez_input.{identity}"))
+    {
+        bail!("configured iPhone has an active PipeWire audio node");
     }
+    if let Some(id) = pipewire_object_id(&pipewire, &format!("bluez_card.{identity}")) {
+        let device = checked_stdout("wpctl", &["inspect", &id])?;
+        if !device.contains("bluez5.profile = \"off\"")
+            || !device.contains("device.disabled = \"true\"")
+        {
+            bail!("configured iPhone PipeWire card has an active audio profile");
+        }
+    }
+    let controller = configuration
+        .adapter_address
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| configuration.adapter.clone());
+    let local = checked_stdout("bluetoothctl", &["show", &controller])?;
+    for forbidden in [
+        "0000110b-0000-1000-8000-00805f9b34fb",
+        "0000111e-0000-1000-8000-00805f9b34fb",
+    ] {
+        if local.contains(forbidden) {
+            bail!("Omarchy still advertises a phone-facing Bluetooth audio role");
+        }
+    }
+    confirm_once("Is Omarchy absent from the iPhone audio-output picker?")?;
     confirm_once("Do AirPods playback and microphone both work now?")?;
     snapshot.report("final");
-    eprintln!("acceptance stage=final serviceEnabled=true serviceReady=true phoneAudioAbsent=true airpodsPlayback=true airpodsMicrophone=true result=pass payloadLogged=false");
+    eprintln!("acceptance stage=final serviceEnabled=true serviceReady=true phoneAudioNodesAbsent=true phoneAudioDestinationAbsent=true airpodsPlayback=true airpodsMicrophone=true result=pass payloadLogged=false");
     Ok(())
+}
+
+fn pipewire_object_id(status: &str, name: &str) -> Option<String> {
+    status
+        .lines()
+        .find(|line| line.contains(name))
+        .and_then(|line| {
+            line.split_ascii_whitespace().find_map(|value| {
+                value
+                    .strip_suffix('.')
+                    .and_then(|id| id.parse::<u32>().ok())
+            })
+        })
+        .map(|id| id.to_string())
 }
 
 fn recovery_canary(
@@ -709,4 +838,56 @@ fn endurance_growth_detector_requires_a_sustained_run() {
     assert!(sustained_monotonic_growth(&[10, 11, 12, 13, 14, 15], 6));
     assert!(!sustained_monotonic_growth(&[10, 11, 12, 11, 13, 14], 6));
     assert!(!sustained_monotonic_growth(&[10, 11, 12], 6));
+}
+
+#[test]
+fn adapter_resolution_ignores_children_and_rejects_missing_or_duplicate_identities() {
+    let tree = "\
+└─ /org\n\
+  └─ /org/bluez\n\
+    ├─ /org/bluez/hci0\n\
+    │ └─ /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF\n\
+    └─ /org/bluez/hci1\n\
+      └─ /org/bluez/hci1/dev_11_22_33_44_55_66\n";
+    assert_eq!(
+        direct_adapter_paths(tree).collect::<Vec<_>>(),
+        vec!["/org/bluez/hci0", "/org/bluez/hci1"]
+    );
+
+    let identity = "11:22:33:44:55:66";
+    assert_eq!(
+        matching_adapter_path(
+            identity,
+            &[
+                ("/org/bluez/hci0".into(), "AA:BB:CC:DD:EE:FF".into()),
+                ("/org/bluez/hci1".into(), identity.into()),
+            ],
+        ),
+        Some("/org/bluez/hci1")
+    );
+    assert_eq!(matching_adapter_path(identity, &[]), None);
+    assert_eq!(
+        matching_adapter_path(
+            identity,
+            &[
+                ("/org/bluez/hci0".into(), identity.into()),
+                ("/org/bluez/hci1".into(), identity.into()),
+            ],
+        ),
+        None
+    );
+}
+
+#[test]
+fn pipewire_card_id_is_extracted_without_matching_unrelated_devices() {
+    let status = "│     109. bluez_card.C4_C1_7D_85_7A_55 [bluez5]\n│  *  110. bluez_card.F0_04_E1_E0_82_80 [bluez5]\n";
+    assert_eq!(
+        pipewire_object_id(status, "bluez_card.C4_C1_7D_85_7A_55").as_deref(),
+        Some("109")
+    );
+    assert_eq!(
+        pipewire_object_id(status, "bluez_card.F0_04_E1_E0_82_80").as_deref(),
+        Some("110")
+    );
+    assert_eq!(pipewire_object_id(status, "bluez_card.missing"), None);
 }

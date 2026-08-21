@@ -16,7 +16,9 @@ V1 must provide:
 - Read-only forwarding with Added, Modified, and Removed notification lifecycle behavior.
 - Interactive setup suitable for a graphical caller, plus standalone diagnostics, status, and teardown commands.
 - Automatic operation at login and recovery after ordinary disconnects, suspend/resume, adapter loss, and BlueZ restart.
-- Optional suppression of only the configured iPhone as a PipeWire audio device.
+- Optional suppression of the configured iPhone as a PipeWire audio endpoint,
+  plus user-level output-only Bluetooth roles that keep phones from selecting
+  the desktop as a speaker/headset while preserving headphone output/input.
 
 V1 explicitly excludes notification actions, replies, history, filters, multiple phones, media control, Apple Media Service, MAP/SMS, and Omarchy-specific frontend behavior.
 
@@ -32,7 +34,7 @@ Separate the implementation into:
 - Minimal HID-over-GATT application and advertisement.
 - ANCS codec and per-phone session.
 - Freedesktop notification sink.
-- Exact-device WirePlumber audio suppression.
+- Transactional exact-device and output-only WirePlumber audio policy.
 
 Abstract BlueZ transport, notification sink, clock, and status writer behind traits so the state machine is testable without hardware.
 
@@ -112,8 +114,9 @@ When invoked in setup mode, the daemon must:
 5. Ask the caller to confirm the incoming identity/passkey through the JSONL contract.
 6. Accept, trust, and record only the confirmed device.
 7. Verify bonding/pairing, then restore the previous adapter settings.
-8. Write configuration atomically.
-9. Apply exact-device WirePlumber suppression when requested.
+8. Reconcile exact-device suppression and the user-level output-only Bluetooth
+   role policy with the requested audio intent.
+9. Write configuration atomically last.
 10. Unregister temporary objects and exit so the production service can start.
 
 Every success, rejection, cancellation, timeout, stdin closure, and unexpected-error path must restore temporary adapter settings and unregister the temporary agent/GATT objects.

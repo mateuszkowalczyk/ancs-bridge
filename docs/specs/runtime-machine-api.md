@@ -14,18 +14,26 @@ The configuration path is
 version 1 TOML schema from `docs/prd/02-machine-api.md`.
 
 The loader rejects an unsupported schema version, a missing or empty adapter,
-and an invalid Bluetooth identity address before constructing Bluetooth paths
-or starting the supervisor. The persisted device name is display metadata;
-the validated bonded-device identity address is the device key.
+an invalid controller identity address, and an invalid Bluetooth device
+identity address before constructing Bluetooth paths or starting the
+supervisor. The persisted controller address is the stable adapter key;
+`adapter` retains the last-known `hciN` name for display and legacy fallback.
+The persisted device name is display metadata, and the validated bonded-device
+identity address is the device key. A legacy version 1 configuration may omit
+the controller address only until an explicitly confirmed setup migration
+rewrites it.
 
 Configuration replacement is atomic and the resulting file has mode `0600`.
 Failed writes do not replace the last valid configuration. Configuration never
 contains notification payload data.
 
 `ancs-bridge daemon` accepts no device-selection arguments. It loads the
-configuration, starts the existing runtime supervisor for that exact adapter
-and bonded device, and reports startup failure on stderr with a nonzero exit.
-It writes no machine data to stdout.
+configuration, resolves the configured controller address to its current BlueZ
+`hciN` name, starts the runtime supervisor for that exact controller and bonded
+device, and reports startup failure on stderr with a nonzero exit. It never
+falls back to another controller by position. Legacy configuration without a
+controller address uses its recorded adapter name until setup migration. The
+daemon writes no machine data to stdout.
 
 ## Runtime status publication
 
@@ -37,7 +45,8 @@ The daemon writes the version 1 status object defined in
 The status object contains only:
 
 - API version, current state, and stable reason/error codes
-- configured adapter and device display metadata
+- last-known configured adapter and device display metadata, plus the optional
+  stable controller identity address used for configuration freshness
 - connection, service, ANCS, and subscription booleans
 - last-transition and last-notification timestamps
 - daemon process ID
@@ -66,6 +75,9 @@ The command applies these rules:
 
 - A valid snapshot belonging to a live `ancs-bridge` daemon and matching the
   current configuration returns `stale: false`.
+- Controller identity participates in configuration matching. A legacy
+  snapshot without `adapterAddress` matches only a legacy configuration that
+  also lacks the controller address.
 - If the recorded daemon is no longer running, or the snapshot no longer
   matches the configuration, the last valid snapshot is preserved and returned
   with `stale: true`.

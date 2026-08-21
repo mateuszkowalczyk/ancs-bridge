@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    os::unix::fs::symlink,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
@@ -134,6 +135,29 @@ fn staged_install_has_only_final_artifacts_and_no_state_mutation() {
             !normalized.contains(forbidden),
             "staging helper mutates user state: {forbidden}"
         );
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn staging_helper_rejects_root_path_aliases() {
+    let root = temporary_directory("root-alias");
+    let root_link = root.join("root-link");
+    symlink("/", &root_link).unwrap();
+    for destination in [
+        PathBuf::from("/./"),
+        PathBuf::from("//"),
+        PathBuf::from("/tmp/.."),
+        root_link,
+    ] {
+        let output = Command::new("bash")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/stage-install.sh"))
+            .arg(destination)
+            .env("ANCS_BRIDGE_BINARY", "/definitely/missing/ancs-bridge")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("DESTDIR must be a non-root"));
     }
     fs::remove_dir_all(root).unwrap();
 }

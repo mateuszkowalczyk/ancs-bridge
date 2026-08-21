@@ -39,6 +39,62 @@ pub async fn device_by_identity(adapter: &Adapter, identity: Address) -> Result<
     Ok(None)
 }
 
+/// Resolve a controller through its stable public address rather than its
+/// kernel-assigned `hciN` name, which can change after re-enumeration.
+pub async fn adapter_by_identity(session: &Session, identity: Address) -> Result<Option<Adapter>> {
+    let mut adapters = Vec::new();
+    for name in session.adapter_names().await? {
+        let adapter = session.adapter(&name)?;
+        adapters.push((name, adapter.address().await?));
+    }
+    matching_adapter_name(identity, &adapters)
+        .map(|name| session.adapter(name))
+        .transpose()
+        .map_err(Into::into)
+}
+
+/// Legacy migration is allowed only when exactly one controller owns the
+/// configured paired device identity.
+pub async fn unique_adapter_with_paired_device(
+    session: &Session,
+    identity: Address,
+) -> Result<Option<Adapter>> {
+    let mut matched = Vec::new();
+    for name in session.adapter_names().await? {
+        let adapter = session.adapter(&name)?;
+        let Some(device) = device_by_identity(&adapter, identity).await? else {
+            continue;
+        };
+        if !device.is_paired().await? {
+            continue;
+        }
+        matched.push(name);
+    }
+    unique_adapter_name(&matched)
+        .map(|name| session.adapter(name))
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn matching_adapter_name(identity: Address, adapters: &[(String, Address)]) -> Option<&str> {
+    let matches = adapters
+        .iter()
+        .filter(|(_, address)| *address == identity)
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+fn unique_adapter_name(matches: &[String]) -> Option<&str> {
+    match matches {
+        [only] => Some(only),
+        _ => None,
+    }
+}
+
 pub async fn has_complete_ancs(device: &bluer::Device) -> Result<bool> {
     for service in device.services().await? {
         if service.uuid().await? != hid::ANCS_SERVICE_UUID {
@@ -116,6 +172,7 @@ struct Subscriptions {
 /// valid lifetime; dropping this value unregisters both objects through bluer RAII.
 pub struct BluerTransport {
     adapter_name: String,
+    adapter_address: Option<Address>,
     device_address: Address,
     session: Option<Session>,
     adapter: Option<Adapter>,
@@ -126,9 +183,14 @@ pub struct BluerTransport {
 }
 
 impl BluerTransport {
-    pub fn new(adapter_name: impl Into<String>, device_address: Address) -> Self {
+    pub fn new(
+        adapter_name: impl Into<String>,
+        adapter_address: Option<Address>,
+        device_address: Address,
+    ) -> Self {
         Self {
             adapter_name: adapter_name.into(),
+            adapter_address,
             device_address,
             session: None,
             adapter: None,
@@ -147,12 +209,17 @@ impl BluerTransport {
             self.session = Some(session);
         }
         if self.adapter.is_none() {
-            let adapter = self
-                .session
-                .as_ref()
-                .context("BlueZ session unavailable")?
-                .adapter(&self.adapter_name)
-                .context("locating configured Bluetooth adapter")?;
+            let session = self.session.as_ref().context("BlueZ session unavailable")?;
+            let adapter = if let Some(identity) = self.adapter_address {
+                adapter_by_identity(session, identity)
+                    .await?
+                    .context("configured Bluetooth adapter identity is not present")?
+            } else {
+                session
+                    .adapter(&self.adapter_name)
+                    .context("locating configured Bluetooth adapter")?
+            };
+            self.adapter_name = adapter.name().to_owned();
             self.adapter = Some(adapter);
         }
         Ok(())
@@ -509,11 +576,9 @@ impl BluetoothTransport for FakeBluetoothTransport {
 
     async fn write_control(&mut self, value: &[u8], operation: ControlWrite) -> Result<()> {
         assert_eq!(operation, ControlWrite::Request);
-        self.inner
-            .lock()
-            .expect("fake transport poisoned")
-            .writes
-            .push(value.to_vec());
+        let mut inner = self.inner.lock().expect("fake transport poisoned");
+        inner.calls.push("write-control");
+        inner.writes.push(value.to_vec());
         Ok(())
     }
 
@@ -566,5 +631,28 @@ mod tests {
         assert!(!advertisement_count_contains_registration(0, 0));
         assert!(!advertisement_count_contains_registration(2, 2));
         assert!(!advertisement_count_contains_registration(1, 2));
+    }
+
+    #[test]
+    fn stable_adapter_identity_survives_kernel_name_change_without_guessing() {
+        let configured: Address = "11:22:33:44:55:66".parse().unwrap();
+        let adapters = vec![
+            ("hci0".into(), "AA:BB:CC:DD:EE:FF".parse().unwrap()),
+            ("hci1".into(), configured),
+        ];
+        assert_eq!(matching_adapter_name(configured, &adapters), Some("hci1"));
+        assert_eq!(
+            matching_adapter_name(
+                configured,
+                &[("hci0".into(), configured), ("hci1".into(), configured),],
+            ),
+            None
+        );
+        assert_eq!(
+            matching_adapter_name("22:33:44:55:66:77".parse().unwrap(), &adapters),
+            None
+        );
+        assert_eq!(unique_adapter_name(&["hci1".into()]), Some("hci1"));
+        assert_eq!(unique_adapter_name(&["hci0".into(), "hci1".into()]), None);
     }
 }

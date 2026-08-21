@@ -14,6 +14,7 @@ schema_version = 1
 
 [bluetooth]
 adapter = "hci0"
+adapter_address = "11:22:33:44:55:66"
 device_address = "AA:BB:CC:DD:EE:FF"
 device_name = "iPhone"
 
@@ -34,8 +35,10 @@ path. The bonded iPhone reconnects to the retained connectable,
 non-discoverable HID advertisement.
 
 Configuration writes provided by the library are atomic and replace the file
-with mode `0600`. Adapter names and bonded identity addresses are validated
-before any BlueZ transport or object path is constructed.
+with mode `0600`. Stable controller and bonded-device identity addresses are
+validated before any BlueZ transport or object path is constructed. The
+controller address lets the daemon resolve the current kernel-assigned `hciN`
+name after re-enumeration or reboot.
 
 ## Diagnostics and setup
 
@@ -99,16 +102,23 @@ Single-result machine commands write exactly one JSON object to stdout. Setup
 reserves stdout for flushed JSONL. Human diagnostics always use stderr. The
 committed v1 fixtures live in `tests/fixtures/machine-api-v1/`.
 
-## Exact-device audio suppression and teardown
+## Phone audio suppression and teardown
 
-`--disable-phone-audio` owns one canonical WirePlumber rule for the confirmed
+`--disable-phone-audio` owns one exact-device WirePlumber rule for the confirmed
 identity at
 `$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d/90-ancs-bridge-AA_BB_CC_DD_EE_FF.conf`.
-The rule disables only `bluez_card.AA_BB_CC_DD_EE_FF`; it does not change
-Bluetooth roles or affect other devices. Identical application/removal is a
-no-op, while different content at the owned path is preserved and reported as
-`audio-rule-conflict`. WirePlumber restarts only after a real change. A later
-setup failure rolls back only a rule created by that setup transaction.
+That rule disables only `bluez_card.AA_BB_CC_DD_EE_FF`. A second user-level
+rule at `91-ancs-bridge-bluetooth-output-only.conf` retains only Bluetooth
+audio-source, LE audio-source, and hands-free gateway roles. This preserves
+AirPods-class playback and microphones while preventing phones from selecting
+Omarchy as a speaker or headset. It changes no `/etc` or system-wide BlueZ
+configuration.
+
+The two rules are applied and removed transactionally with at most one
+WirePlumber restart. Identical application/removal is a no-op, while different
+content at either owned path is preserved and reported as
+`audio-rule-conflict`. A later setup failure rolls back only rules created by
+that setup transaction.
 
 Remove bridge-owned state with:
 
@@ -117,9 +127,10 @@ ancs-bridge teardown [--forget-device]
 ```
 
 Teardown is silent and idempotent. It stops/disables the user service when the
-unit exists, removes and reloads the exact audio rule, optionally forgets only
-the configured bond, then deletes configuration last. Any required cleanup
-failure retains configuration so the same command can be retried safely.
+unit exists, removes both audio rules and reloads WirePlumber, optionally
+forgets only the configured bond, then deletes configuration last. Any required
+cleanup failure restores the previous rules where necessary and retains
+configuration so the same command can be retried safely.
 
 ## systemd user service
 
@@ -289,9 +300,10 @@ Replace `baseline` with each stage in this order:
    for its delivery, and scans configuration, runtime status/files, CLI and
    service diagnostics, the current-boot journal, installed artifacts, and
    setup diagnostic fixtures without writing the canary or scanned content.
-8. `final` — verifies the service, adapter, bonds/audio rule, WirePlumber, and
-   configured-phone audio-card absence, then asks for an AirPods playback and
-   microphone confirmation.
+8. `final` — verifies the service, adapter, both audio rules, WirePlumber, an
+   off/disabled configured-phone audio card when present, no active phone audio
+   nodes, and no phone-facing local Bluetooth audio roles, then asks for iPhone
+   output-picker absence plus AirPods playback and microphone confirmation.
 
 For reboot/login acceptance, first finish a passing `baseline` stage and
 confirm the service is enabled. Reboot normally, return to this checkout after

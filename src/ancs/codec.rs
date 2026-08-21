@@ -260,13 +260,16 @@ fn parse_notification(
         return Err(CodecError::WrongUid { expected_uid, uid });
     }
     let mut cursor = 5;
-    let Some(app_identifier) = parse_attribute(bytes, &mut cursor, APP_IDENTIFIER)? else {
+    let Some(app_identifier) =
+        parse_attribute(bytes, &mut cursor, APP_IDENTIFIER, MAX_RESPONSE_BYTES)?
+    else {
         return Ok(None);
     };
-    let Some(title) = parse_attribute(bytes, &mut cursor, TITLE)? else {
+    let Some(title) = parse_attribute(bytes, &mut cursor, TITLE, TITLE_MAX_BYTES as usize)? else {
         return Ok(None);
     };
-    let Some(message) = parse_attribute(bytes, &mut cursor, MESSAGE)? else {
+    let Some(message) = parse_attribute(bytes, &mut cursor, MESSAGE, MESSAGE_MAX_BYTES as usize)?
+    else {
         return Ok(None);
     };
     Ok(Some((
@@ -300,7 +303,8 @@ fn parse_app(
         return Err(CodecError::WrongAppIdentifier);
     }
     let mut cursor = app_end + 1;
-    let Some(display_name) = parse_attribute(bytes, &mut cursor, DISPLAY_NAME)? else {
+    let Some(display_name) = parse_attribute(bytes, &mut cursor, DISPLAY_NAME, MAX_RESPONSE_BYTES)?
+    else {
         return Ok(None);
     };
     Ok(Some((
@@ -316,6 +320,7 @@ fn parse_attribute(
     bytes: &[u8],
     cursor: &mut usize,
     expected_id: u8,
+    maximum_length: usize,
 ) -> Result<Option<String>, CodecError> {
     if bytes.len().saturating_sub(*cursor) < 3 {
         return Ok(None);
@@ -328,6 +333,9 @@ fn parse_attribute(
         });
     }
     let length = u16::from_le_bytes([bytes[*cursor + 1], bytes[*cursor + 2]]) as usize;
+    if length > maximum_length {
+        return Err(CodecError::InvalidLength);
+    }
     let start = *cursor + 3;
     let end = start.checked_add(length).ok_or(CodecError::InvalidLength)?;
     if end > MAX_RESPONSE_BYTES {
@@ -594,5 +602,32 @@ mod tests {
             decoder.push(&vec![0; MAX_RESPONSE_BYTES]),
             Err(CodecError::Oversized)
         );
+    }
+
+    #[test]
+    fn enforces_requested_title_and_message_attribute_limits() {
+        let mut exact = vec![0];
+        exact.extend_from_slice(&42_u32.to_le_bytes());
+        exact.extend(attribute(0, b"com.example"));
+        exact.extend(attribute(1, &vec![b't'; TITLE_MAX_BYTES as usize]));
+        exact.extend(attribute(3, &vec![b'm'; MESSAGE_MAX_BYTES as usize]));
+        let mut decoder = DataSourceDecoder::default();
+        decoder.expect(ResponseExpectation::Notification { uid: 42 });
+        assert_eq!(decoder.push(&exact).unwrap().len(), 1);
+
+        for (title_length, message_length) in [
+            (TITLE_MAX_BYTES as usize + 1, 1),
+            (1, MESSAGE_MAX_BYTES as usize + 1),
+        ] {
+            let mut response = vec![0];
+            response.extend_from_slice(&42_u32.to_le_bytes());
+            response.extend(attribute(0, b"com.example"));
+            response.extend(attribute(1, &vec![b't'; title_length]));
+            response.extend(attribute(3, &vec![b'm'; message_length]));
+            let mut decoder = DataSourceDecoder::default();
+            decoder.expect(ResponseExpectation::Notification { uid: 42 });
+            assert!(decoder.push(&response[..6]).unwrap().is_empty());
+            assert_eq!(decoder.push(&response[6..]), Err(CodecError::InvalidLength));
+        }
     }
 }

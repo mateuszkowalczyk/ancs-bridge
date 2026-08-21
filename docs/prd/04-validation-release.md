@@ -5,7 +5,8 @@
 1. Complete the protocol and hardware feasibility spike.
 2. Implement the ANCS codec, fakeable interfaces, and BlueZ supervisor.
 3. Stabilize machine API version 1, including CLI, status, and setup JSONL fixtures.
-4. Implement pairing setup, exact-device audio suppression, and teardown.
+4. Implement pairing setup, exact-device audio suppression, user-level
+   output-only Bluetooth roles, and teardown.
 5. Package and validate the systemd user service and source-built AUR distribution.
 6. Complete automated and hardware acceptance, then release `ancs-bridge` 0.1.0.
 
@@ -33,7 +34,9 @@ Stop or redesign before product implementation if pairing needs patched BlueZ/iO
 - Fake BlueZ/clock tests for phone disconnect, service disappearance/reappearance, delayed authorization, BlueZ restart, adapter loss, suspend-style reconciliation, and backoff reset.
 - Setup JSONL confirmation, rejection, timeout, cancellation, malformed input, stdin closure, unexpected exit, and API incompatibility.
 - Atomic configuration/status writes, mode `0600` and runtime permissions, status schema, and absence of notification content.
-- Exact-MAC WirePlumber generation, idempotent application, reversal, and path/input validation.
+- Exact-MAC and output-only WirePlumber generation, transactional intent and
+  identity reconciliation, idempotent application/reversal, rollback, and
+  path/input validation.
 - `cargo fmt --check`, Clippy with warnings denied, unit/integration tests, dependency audit, and clean release build.
 
 ## Packaging tests
@@ -54,9 +57,11 @@ Run on Omarchy 4 or equivalent current Arch userspace, BlueZ 5.87, the detected 
 - Recovery after daemon restart, BlueZ restart, adapter power cycle, suspend/lid cycle, iPhone Bluetooth off/on, range loss, and computer reboot/login.
 - Twenty disconnect/reconnect cycles without a dead session, unbounded growth, or unintended duplicate notifications.
 - No notification content in journal, status, configuration, or setup diagnostics.
-- Configured iPhone absent as a PipeWire audio device while ANCS remains `ready`.
+- Configured iPhone has no active PipeWire audio profile/nodes, Omarchy is not
+  offered as its audio destination, and ANCS remains `ready`.
 - AirPods playback and microphone working before, during, and after setup/reconnection.
-- Teardown retaining pairing and teardown forgetting pairing; WirePlumber remains healthy and the rule is removed.
+- Teardown retaining pairing and teardown forgetting pairing; WirePlumber
+  remains healthy and both rules are removed.
 
 Routine reconnect acceptance means the next notification is forwarded once `ready`, without desktop intervention or repeated iPhone Settings interaction. A one-time iPhone action is acceptable when iOS explicitly requires notification authorization or pairing.
 

@@ -9,7 +9,8 @@
 - Install only `/usr/bin/ancs-bridge`, the license, and the systemd user unit.
 - Rust/Cargo are make dependencies.
 - BlueZ/D-Bus are runtime dependencies.
-- WirePlumber is optional unless exact-device phone-audio suppression is selected.
+- WirePlumber is optional unless phone-audio suppression and the associated
+  user-level output-only Bluetooth role policy are selected.
 - Do not ship a prebuilt binary in the AUR source package.
 - Do not use package install hooks to enable services, pair devices, modify user configuration, or restart WirePlumber.
 - Generate and commit `.SRCINFO`; validate with `makepkg --cleanbuild` and `namcap` in a clean Arch environment.
@@ -32,7 +33,7 @@ UMask=0077
 - Add conservative hardening such as `NoNewPrivileges=true` and `PrivateTmp=true`, shipping only directives proven compatible with BlueZ and notification D-Bus access.
 - Restart must preserve persistent configuration and recreate runtime status and BlueZ registrations.
 
-## Exact-device WirePlumber rule
+## WirePlumber phone-audio policy
 
 When requested, generate atomically:
 
@@ -50,7 +51,19 @@ and apply:
 device.disabled = true
 ```
 
-Validate and normalize the address before path/rule generation. Application and removal are idempotent. Restart the user's WirePlumber service after a change. Never modify global Bluetooth roles or match other devices. The implementation follows [WirePlumber Bluetooth rules](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html) and [`device.disabled`](https://pipewire.pages.freedesktop.org/pipewire/page_man_pipewire-props_7.html).
+Validate and normalize the address before path/rule generation. Application
+and removal are idempotent. Restart the user's WirePlumber service after a
+change. The exact-device rule never matches another device. The implementation
+follows [WirePlumber Bluetooth rules](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html)
+and [`device.disabled`](https://pipewire.pages.freedesktop.org/pipewire/page_man_pipewire-props_7.html).
+
+Also generate a user-level
+`91-ancs-bridge-bluetooth-output-only.conf` policy that retains only
+`a2dp_source`, `bap_source`, and `hfp_ag`. This affects all Bluetooth peers in
+the logged-in user's WirePlumber session because roles are registered before a
+peer identity is known, but it never modifies `/etc` or system-wide BlueZ
+configuration. Apply, remove, and roll back both exact canonical files as one
+transaction with at most one successful-operation reload.
 
 ## Privacy and security
 
@@ -68,7 +81,8 @@ Validate and normalize the address before path/rule generation. Application and 
 
 - Package upgrades preserve user configuration and service enablement.
 - Package removal does not silently delete user configuration or pairing.
-- `ancs-bridge teardown` removes configuration and the generated audio rule; `--forget-device` additionally removes the pairing.
+- `ancs-bridge teardown` removes configuration and both generated audio rules;
+  `--forget-device` additionally removes the pairing.
 - A frontend should perform teardown before optional package removal, but the CLI must remain usable without a frontend.
 
 ## Acceptance criteria
@@ -78,5 +92,6 @@ Validate and normalize the address before path/rule generation. Application and 
 - The package performs no automatic user-state mutation.
 - The user service runs without root and restarts after failure.
 - No notification content or secret appears in package logs, systemd journal, or machine status.
-- The audio rule affects only the configured phone and is fully reversible.
-
+- The exact-device rule affects only the configured phone; the documented
+  user-level output-only role policy affects all Bluetooth peers and preserves
+  headphone playback/microphone roles. Both are fully reversible.

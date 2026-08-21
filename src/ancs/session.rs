@@ -15,6 +15,8 @@ use std::{
 
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 pub const MAX_PENDING_UIDS: usize = 100;
+pub const MAX_ACTIVE_NOTIFICATIONS: usize = 100;
+pub const MAX_CACHED_APPS: usize = 100;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SessionMetadata {
@@ -35,7 +37,9 @@ pub struct SessionEngine<N, C> {
     outstanding: Option<u32>,
     canceled: HashSet<u32>,
     handles: HashMap<u32, DesktopHandle>,
+    handle_order: VecDeque<u32>,
     app_names: HashMap<String, String>,
+    app_order: VecDeque<String>,
     decoder: DataSourceDecoder,
     metadata: SessionMetadata,
 }
@@ -54,7 +58,9 @@ where
             outstanding: None,
             canceled: HashSet::new(),
             handles: HashMap::new(),
+            handle_order: VecDeque::new(),
             app_names: HashMap::new(),
+            app_order: VecDeque::new(),
             decoder: DataSourceDecoder::default(),
             metadata: SessionMetadata::default(),
         }
@@ -89,6 +95,7 @@ where
                     self.canceled.insert(event.uid);
                 }
                 if let Some(handle) = self.handles.remove(&event.uid) {
+                    self.handle_order.retain(|uid| *uid != event.uid);
                     if self.sink.close(handle).await.is_err() {
                         self.metadata.recoverable_error_count += 1;
                         self.metadata.last_error_code = Some("desktop-close-failed");
@@ -131,8 +138,9 @@ where
 
         let notification = self.fetch_notification(transport, uid).await;
         self.outstanding = None;
+        let canceled = self.canceled.remove(&uid);
         let attributes = match notification {
-            Ok(value) if !self.canceled.remove(&uid) => value,
+            Ok(value) if !canceled => value,
             Ok(_) => return Ok(true),
             Err(_error) => {
                 self.metadata.recoverable_error_count += 1;
@@ -153,8 +161,7 @@ where
                 .await
             {
                 Ok(value) => {
-                    self.app_names
-                        .insert(attributes.app_identifier.clone(), value.clone());
+                    self.retain_app_name(attributes.app_identifier.clone(), value.clone());
                     value
                 }
                 Err(error) => {
@@ -181,7 +188,7 @@ where
         };
         match delivery {
             Ok(handle) => {
-                self.handles.insert(uid, handle);
+                self.retain_handle(uid, handle).await;
                 self.metadata.delivered_count += 1;
             }
             Err(_) => {
@@ -191,6 +198,38 @@ where
             }
         }
         Ok(true)
+    }
+
+    fn retain_app_name(&mut self, identifier: String, display_name: String) {
+        if self
+            .app_names
+            .insert(identifier.clone(), display_name)
+            .is_none()
+        {
+            self.app_order.push_back(identifier);
+        }
+        while self.app_names.len() > MAX_CACHED_APPS {
+            if let Some(oldest) = self.app_order.pop_front() {
+                self.app_names.remove(&oldest);
+            }
+        }
+    }
+
+    async fn retain_handle(&mut self, uid: u32, handle: DesktopHandle) {
+        if self.handles.insert(uid, handle).is_none() {
+            self.handle_order.push_back(uid);
+        }
+        while self.handles.len() > MAX_ACTIVE_NOTIFICATIONS {
+            let Some(oldest) = self.handle_order.pop_front() else {
+                break;
+            };
+            if let Some(evicted) = self.handles.remove(&oldest) {
+                if self.sink.close(evicted).await.is_err() {
+                    self.metadata.recoverable_error_count += 1;
+                    self.metadata.last_error_code = Some("desktop-close-failed");
+                }
+            }
+        }
     }
 
     async fn fetch_notification<T: BluetoothTransport>(
@@ -290,6 +329,8 @@ where
         self.outstanding = None;
         self.canceled.clear();
         self.app_names.clear();
+        self.app_order.clear();
+        self.handle_order.clear();
         self.decoder.clear();
     }
 }
@@ -481,6 +522,41 @@ mod tests {
         engine.process_next(&mut transport).await.unwrap();
         assert!(sink.calls().is_empty());
         assert_eq!(probe.writes().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn retained_session_state_is_bounded_and_failed_cancellation_is_cleared() {
+        let probe = FakeBluetoothTransport::default();
+        let mut transport = probe.clone();
+        let sink = FakeNotificationSink::default();
+        let mut engine = SessionEngine::new(sink.clone(), FakeClock::default());
+
+        for uid in 0..105 {
+            let app = format!("app.{uid}");
+            engine.ingest(event(EventKind::Added, uid)).await;
+            probe.packet(TransportPacket::DataSource(notification_response(
+                uid, &app,
+            )));
+            probe.packet(TransportPacket::DataSource(app_response(&app, &app)));
+            engine.process_next(&mut transport).await.unwrap();
+        }
+        assert!(engine.handles.len() <= 100);
+        assert!(engine.app_names.len() <= 100);
+        assert_eq!(
+            sink.calls()
+                .iter()
+                .filter(|call| matches!(call, SinkCall::Close(_)))
+                .count(),
+            5
+        );
+
+        engine.ingest(event(EventKind::Added, 1000)).await;
+        probe.packet(TransportPacket::NotificationSource(
+            [2, 0, 0, 1, 0xe8, 0x03, 0, 0].to_vec(),
+        ));
+        probe.packet_error("attribute stream failed");
+        engine.process_next(&mut transport).await.unwrap();
+        assert!(engine.canceled.is_empty());
     }
 
     #[derive(Clone, Default)]

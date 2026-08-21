@@ -65,8 +65,9 @@ for buffered response data.
 At most 100 notification UIDs may be pending. Modified events for the same UID
 are coalesced, Removed cancels pending work, and `PreExisting` notifications are
 skipped to avoid a notification flood when a session begins. App display names
-are cached only in memory for the active ANCS session; after lookup failure or
-timeout, the bundle identifier is used as the fallback display name.
+are cached only in memory for the active ANCS session, with at most 100 cached
+apps. After lookup failure or timeout, the bundle identifier is used as the
+fallback display name.
 
 ## Desktop notification lifecycle
 
@@ -76,6 +77,14 @@ session:
 - Added creates a notification.
 - Modified replaces the mapped notification.
 - Removed closes it.
+
+The daemon retains at most 100 active UID-to-handle mappings. If a peer exceeds
+that bound without removing older notifications, the oldest mapped desktop
+notification is closed and forgotten. A later Modified event for that evicted
+UID creates a new desktop notification. This bounded fallback protects the
+daemon and notification service from an unbounded malicious or faulty ANCS
+peer; normal in-bound lifecycle events continue to replace and close their
+mapped handle.
 
 V1 exposes no actions and never sends notification-action commands to the
 iPhone. Delivery failure logs metadata only and does not terminate the ANCS

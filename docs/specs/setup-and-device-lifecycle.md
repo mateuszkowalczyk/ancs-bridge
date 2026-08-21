@@ -10,14 +10,23 @@ by `bluetooth-accessory-pairing.md`, audio-rule details by
 
 ## Adapter selection
 
-Diagnostics and setup use the configured adapter when valid configuration
-exists. Otherwise they use the only adapter exposed by BlueZ. They never guess
-when BlueZ exposes zero or multiple adapters, and they never power an adapter.
+Diagnostics and setup resolve a configured controller by its stable public
+Bluetooth address, tolerating a changed BlueZ `hciN` name. Otherwise they use
+the only adapter exposed by BlueZ. They never guess when BlueZ exposes zero or
+multiple adapters, and they never power an adapter.
+
+For a legacy version 1 configuration without a controller address, setup first
+tries the recorded adapter name. If that name disappeared, it may select a
+single adapter only when that adapter contains the exact configured paired
+iPhone identity. It registers the ordinary runtime advertisement, asks the
+caller to confirm reuse of that existing bond, verifies ANCS, and writes the
+stable controller address plus current `hciN` name during the normal commit.
+Zero or multiple exact-bond matches fail without changing configuration.
 
 Setup fails before opening a pairing window unless the selected adapter is
 powered and supports the required central and peripheral roles plus LE
-advertising. All adapter names and device identity addresses are validated
-before use in D-Bus paths or persisted configuration.
+advertising. All adapter names, controller addresses, and device identity
+addresses are validated before use in D-Bus paths or persisted configuration.
 
 ## `doctor --json`
 
@@ -136,10 +145,13 @@ trusted, waits for complete ANCS readiness, and then removes temporary ANCS
 subscriptions. It restores adapter settings and unregisters the temporary
 agent, advertisement, and GATT application before applying persistent changes.
 
-If requested, the exact-device audio rule is applied next. Configuration is
-written atomically last. The existing configuration remains untouched until
-the new transaction commits. If configuration persistence fails after a new
-audio rule was applied, setup rolls that rule back and reloads WirePlumber.
+Setup next reconciles the previously configured audio intent and phone identity
+to the newly requested state. This can create both rules, remove both rules,
+repair a missing canonical rule, or replace only the exact-device rule when the
+confirmed identity changes. The two rule paths are preflighted and changed as
+one transaction with at most one WirePlumber restart. Configuration is written
+atomically last. If configuration persistence fails, setup restores the prior
+rule set and reloads WirePlumber before reporting failure.
 
 Success is emitted only after every required step succeeds:
 
@@ -173,14 +185,14 @@ Success may be silent; human diagnostics and errors use stderr.
 Teardown performs these operations in order:
 
 1. stop and disable `ancs-bridge.service` when the user unit exists
-2. remove the configured exact-device audio rule and reload WirePlumber when
-   required
+2. remove the configured exact-device and output-only audio rules and reload
+   WirePlumber when required
 3. remove only the configured BlueZ device when `--forget-device` is present
 4. remove configuration last
 
 Independent cleanup is best-effort, but configuration is retained whenever a
 required cleanup step fails so the command can be retried safely. An
-absent service, already absent owned rule, already absent pairing, or absent
+absent service, already absent owned rules, already absent pairing, or absent
 configuration is not an error. Without valid configuration teardown never
 guesses a device address or scans and removes matching files.
 

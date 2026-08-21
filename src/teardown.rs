@@ -1,5 +1,5 @@
 use crate::{
-    audio::{remove_with_reload, AudioRule, RuleChange},
+    audio::{remove_with_reload, AudioRule},
     config::ConfigurationStore,
     service::UserServiceControl,
 };
@@ -12,7 +12,12 @@ pub const BRIDGE_UNIT: &str = "ancs-bridge.service";
 
 #[async_trait]
 pub trait BondCleanup: Send + Sync {
-    async fn remove_exact(&self, adapter: &str, address: Address) -> Result<()>;
+    async fn remove_exact(
+        &self,
+        adapter: &str,
+        adapter_address: Option<Address>,
+        address: Address,
+    ) -> Result<()>;
 }
 
 #[derive(Default)]
@@ -20,11 +25,22 @@ pub struct BluezBondCleanup;
 
 #[async_trait]
 impl BondCleanup for BluezBondCleanup {
-    async fn remove_exact(&self, adapter_name: &str, address: Address) -> Result<()> {
+    async fn remove_exact(
+        &self,
+        adapter_name: &str,
+        adapter_address: Option<Address>,
+        address: Address,
+    ) -> Result<()> {
         let session = Session::new().await.context("connecting to BlueZ")?;
-        let adapter = session
-            .adapter(adapter_name)
-            .context("locating configured adapter")?;
+        let adapter = if let Some(identity) = adapter_address {
+            crate::bluetooth::transport::adapter_by_identity(&session, identity)
+                .await?
+                .context("locating configured adapter identity")?
+        } else {
+            session
+                .adapter(adapter_name)
+                .context("locating configured adapter")?
+        };
         if let Some(device) =
             crate::bluetooth::transport::device_by_identity(&adapter, address).await?
         {
@@ -70,15 +86,18 @@ impl Teardown {
         if configuration.suppress_phone_audio {
             let rule = AudioRule::new(self.config_home.clone(), configuration.device_address);
             match remove_with_reload(&rule, self.services.as_ref()) {
-                Ok(RuleChange::Removed | RuleChange::Unchanged) => {}
-                Ok(RuleChange::Created) => unreachable!(),
+                Ok(_) => {}
                 Err(error) => failures.push(format!("audio rule cleanup: {error:#}")),
             }
         }
         if forget_device {
             if let Err(error) = self
                 .bonds
-                .remove_exact(&configuration.adapter, configuration.device_address)
+                .remove_exact(
+                    &configuration.adapter,
+                    configuration.adapter_address,
+                    configuration.device_address,
+                )
                 .await
             {
                 failures.push(format!("Bluetooth bond cleanup: {error:#}"));
@@ -141,7 +160,12 @@ mod tests {
 
     #[async_trait]
     impl BondCleanup for FakeBonds {
-        async fn remove_exact(&self, adapter: &str, address: Address) -> Result<()> {
+        async fn remove_exact(
+            &self,
+            adapter: &str,
+            _: Option<Address>,
+            address: Address,
+        ) -> Result<()> {
             self.calls.lock().unwrap().push((adapter.into(), address));
             if self.fail {
                 Err(anyhow!("bond failed"))
@@ -156,6 +180,7 @@ mod tests {
             schema_version: CONFIG_SCHEMA_VERSION,
             bluetooth: BluetoothConfiguration {
                 adapter: "hci0".into(),
+                adapter_address: Some("11:22:33:44:55:66".into()),
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
             },
@@ -204,6 +229,7 @@ mod tests {
             teardown.run(forget).await.unwrap();
             assert!(store.load().unwrap().is_none());
             assert!(!rule.path().exists());
+            assert!(!rule.role_path().exists());
             assert_eq!(bonds.calls.lock().unwrap().len(), usize::from(forget));
             teardown.run(forget).await.unwrap();
         }
@@ -229,14 +255,17 @@ mod tests {
             });
             let (teardown, store) = harness(&directory, services, bonds);
             store.save(&configuration(true)).unwrap();
-            AudioRule::new(
+            let rule = AudioRule::new(
                 directory.path().to_owned(),
                 "AA:BB:CC:DD:EE:FF".parse().unwrap(),
-            )
-            .apply()
-            .unwrap();
+            );
+            rule.apply().unwrap();
             assert!(teardown.run(true).await.is_err());
             assert!(store.load().unwrap().is_some());
+            if fail_restart {
+                assert!(rule.path().exists());
+                assert!(rule.role_path().exists());
+            }
         }
     }
 

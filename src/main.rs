@@ -168,7 +168,11 @@ async fn daemon() -> Result<()> {
     let status_writer =
         PersistentStatusWriter::new(status_store, StatusIdentity::from(&configuration));
     let mut supervisor = Supervisor::new(
-        BluerTransport::new(configuration.adapter, configuration.device_address),
+        BluerTransport::new(
+            configuration.adapter,
+            configuration.adapter_address,
+            configuration.device_address,
+        ),
         FreedesktopSink::default(),
         TokioClock::default(),
         status_writer,

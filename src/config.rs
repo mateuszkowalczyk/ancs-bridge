@@ -20,6 +20,8 @@ pub struct Configuration {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BluetoothConfiguration {
     pub adapter: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adapter_address: Option<String>,
     pub device_address: String,
     pub device_name: String,
 }
@@ -32,6 +34,7 @@ pub struct DesktopConfiguration {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedConfiguration {
     pub adapter: String,
+    pub adapter_address: Option<Address>,
     pub device_address: Address,
     pub device_name: String,
     pub suppress_phone_audio: bool,
@@ -46,6 +49,16 @@ impl Configuration {
             );
         }
         validate_adapter(&self.bluetooth.adapter)?;
+        let adapter_address = self
+            .bluetooth
+            .adapter_address
+            .as_deref()
+            .map(|value| {
+                value
+                    .parse()
+                    .context("invalid configured Bluetooth adapter identity address")
+            })
+            .transpose()?;
         let device_address = self
             .bluetooth
             .device_address
@@ -53,6 +66,7 @@ impl Configuration {
             .context("invalid configured Bluetooth identity address")?;
         Ok(ValidatedConfiguration {
             adapter: self.bluetooth.adapter.clone(),
+            adapter_address,
             device_address,
             device_name: self.bluetooth.device_name.clone(),
             suppress_phone_audio: self.desktop.suppress_phone_audio,
@@ -152,6 +166,7 @@ mod tests {
             schema_version: CONFIG_SCHEMA_VERSION,
             bluetooth: BluetoothConfiguration {
                 adapter: "hci0".into(),
+                adapter_address: Some("11:22:33:44:55:66".into()),
                 device_address: address.into(),
                 device_name: "iPhone".into(),
             },
@@ -180,6 +195,20 @@ mod tests {
             Path::new("/home/example/.config/ancs-bridge/config.toml")
         );
         assert!(ConfigurationStore::from_environment_values(None, None).is_err());
+    }
+
+    #[test]
+    fn legacy_configuration_without_adapter_identity_remains_readable() {
+        let directory = TestDirectory::new("configuration-legacy-adapter");
+        let store = ConfigurationStore::new(directory.path().join("config.toml"));
+        fs::write(
+            store.path(),
+            "schema_version = 1\n[bluetooth]\nadapter = \"hci0\"\ndevice_address = \"AA:BB:CC:DD:EE:FF\"\ndevice_name = \"iPhone\"\n[desktop]\nsuppress_phone_audio = true\n",
+        )
+        .unwrap();
+        let configuration = store.load().unwrap().unwrap();
+        assert_eq!(configuration.adapter, "hci0");
+        assert_eq!(configuration.adapter_address, None);
     }
 
     #[test]
@@ -248,6 +277,13 @@ mod tests {
             Configuration {
                 bluetooth: BluetoothConfiguration {
                     adapter: "hci/0".into(),
+                    ..configuration("AA:BB:CC:DD:EE:FF").bluetooth
+                },
+                ..configuration("AA:BB:CC:DD:EE:FF")
+            },
+            Configuration {
+                bluetooth: BluetoothConfiguration {
+                    adapter_address: Some("invalid".into()),
                     ..configuration("AA:BB:CC:DD:EE:FF").bluetooth
                 },
                 ..configuration("AA:BB:CC:DD:EE:FF")

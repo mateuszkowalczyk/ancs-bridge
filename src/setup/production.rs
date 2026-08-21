@@ -4,7 +4,7 @@
 
 use super::{Candidate, Preparation, SetupBackend, SetupOptions};
 use crate::{
-    audio::{apply_with_reload, rollback_created, AudioRule, RuleChange, WIREPLUMBER_UNIT},
+    audio::{reconcile_with_reload, rollback_change, AudioRule, WIREPLUMBER_UNIT},
     bluetooth::{hid, transport},
     config::{
         BluetoothConfiguration, Configuration, ConfigurationStore, DesktopConfiguration,
@@ -41,7 +41,7 @@ struct AdapterSnapshot {
 struct SetupRegistrations {
     _application: ApplicationHandle,
     _advertisement: AdvertisementHandle,
-    _agent: AgentHandle,
+    _agent: Option<AgentHandle>,
 }
 
 struct AncsSubscriptions {
@@ -122,6 +122,7 @@ pub struct BluerSetupBackend {
     gate: Option<Arc<AgentGate>>,
     notices: Option<mpsc::UnboundedReceiver<AgentNotice>>,
     resolved_identity: Option<(Address, String)>,
+    legacy_adapter_migration: bool,
 }
 
 impl BluerSetupBackend {
@@ -143,6 +144,7 @@ impl BluerSetupBackend {
             gate: None,
             notices: None,
             resolved_identity: None,
+            legacy_adapter_migration: false,
         }
     }
 
@@ -154,13 +156,36 @@ impl BluerSetupBackend {
             .adapter_names()
             .await
             .map_err(|_| SetupFailure::EnvironmentUnavailable)?;
-        let name = match select_adapter(self.configured.as_ref(), &adapters) {
-            AdapterSelection::Selected(name) => name,
-            _ => return Err(SetupFailure::AdapterUnavailable),
+        let adapter = if let Some(configuration) = self.configured.as_ref() {
+            if let Some(identity) = configuration.adapter_address {
+                transport::adapter_by_identity(&session, identity)
+                    .await
+                    .map_err(|_| SetupFailure::AdapterUnavailable)?
+                    .ok_or(SetupFailure::AdapterUnavailable)?
+            } else if adapters.contains(&configuration.adapter) {
+                session
+                    .adapter(&configuration.adapter)
+                    .map_err(|_| SetupFailure::AdapterUnavailable)?
+            } else {
+                let adapter = transport::unique_adapter_with_paired_device(
+                    &session,
+                    configuration.device_address,
+                )
+                .await
+                .map_err(|_| SetupFailure::AdapterUnavailable)?
+                .ok_or(SetupFailure::AdapterUnavailable)?;
+                self.legacy_adapter_migration = true;
+                adapter
+            }
+        } else {
+            let name = match select_adapter(None, &adapters) {
+                AdapterSelection::Selected(name) => name,
+                _ => return Err(SetupFailure::AdapterUnavailable),
+            };
+            session
+                .adapter(&name)
+                .map_err(|_| SetupFailure::AdapterUnavailable)?
         };
-        let adapter = session
-            .adapter(&name)
-            .map_err(|_| SetupFailure::AdapterUnavailable)?;
         if !adapter
             .is_powered()
             .await
@@ -253,7 +278,7 @@ impl BluerSetupBackend {
         self.registrations = Some(SetupRegistrations {
             _application: application,
             _advertisement: advertisement,
-            _agent: agent,
+            _agent: Some(agent),
         });
         adapter
             .set_pairable(true)
@@ -265,6 +290,30 @@ impl BluerSetupBackend {
                 .await;
             return Err(error).map_err(|_| SetupFailure::BackendFailed);
         }
+        Ok(())
+    }
+
+    async fn start_existing_reconnect_window(&mut self) -> Result<(), SetupFailure> {
+        let adapter = self
+            .adapter
+            .as_ref()
+            .ok_or(SetupFailure::AdapterUnavailable)?;
+        let application = adapter
+            .serve_gatt_application(hid::application())
+            .await
+            .map_err(|_| SetupFailure::BackendFailed)?;
+        let advertisement = match adapter.advertise(hid::runtime_advertisement()).await {
+            Ok(handle) => handle,
+            Err(_) => {
+                drop(application);
+                return Err(SetupFailure::BackendFailed);
+            }
+        };
+        self.registrations = Some(SetupRegistrations {
+            _application: application,
+            _advertisement: advertisement,
+            _agent: None,
+        });
         Ok(())
     }
 
@@ -318,6 +367,22 @@ impl SetupBackend for BluerSetupBackend {
             }
             self.start_fresh_window().await?;
             return Ok(Preparation::Fresh);
+        }
+        if self.legacy_adapter_migration {
+            let configuration = self
+                .configured
+                .as_ref()
+                .ok_or(SetupFailure::AdapterUnavailable)?;
+            let candidate = paired_candidate(
+                self.adapter
+                    .as_ref()
+                    .ok_or(SetupFailure::AdapterUnavailable)?,
+                configuration.device_address,
+            )
+            .await?
+            .ok_or(SetupFailure::RepairRequired)?;
+            self.start_existing_reconnect_window().await?;
+            return Ok(Preparation::Existing(candidate));
         }
         if let Some(candidate) = self.configured_or_unique_existing().await? {
             return Ok(Preparation::Existing(candidate));
@@ -477,7 +542,14 @@ impl SetupBackend for BluerSetupBackend {
             .resolved_identity
             .clone()
             .unwrap_or((candidate_address, candidate.device_name.clone()));
-        let audio_rule = if options.disable_phone_audio {
+        let previous_audio_rule = self
+            .configured
+            .as_ref()
+            .filter(|configuration| configuration.suppress_phone_audio)
+            .map(|configuration| AudioRule::from_environment(configuration.device_address))
+            .transpose()
+            .map_err(|_| SetupFailure::AudioUnavailable)?;
+        let desired_audio_rule = if options.disable_phone_audio {
             if !self
                 .services
                 .unit_exists(WIREPLUMBER_UNIT)
@@ -499,6 +571,15 @@ impl SetupBackend for BluerSetupBackend {
             schema_version: CONFIG_SCHEMA_VERSION,
             bluetooth: BluetoothConfiguration {
                 adapter: adapter_name,
+                adapter_address: Some(
+                    self.adapter
+                        .as_ref()
+                        .ok_or(SetupFailure::ConfigurationWriteFailed)?
+                        .address()
+                        .await
+                        .map_err(|_| SetupFailure::ConfigurationWriteFailed)?
+                        .to_string(),
+                ),
                 device_address: address.to_string(),
                 device_name,
             },
@@ -509,7 +590,8 @@ impl SetupBackend for BluerSetupBackend {
         commit_persistent(
             &self.config_store,
             &configuration,
-            audio_rule.as_ref(),
+            previous_audio_rule.as_ref(),
+            desired_audio_rule.as_ref(),
             self.services.as_ref(),
         )
     }
@@ -537,15 +619,15 @@ fn requested_repair_target(
 fn commit_persistent(
     store: &ConfigurationStore,
     configuration: &Configuration,
-    audio_rule: Option<&AudioRule>,
+    previous_audio_rule: Option<&AudioRule>,
+    desired_audio_rule: Option<&AudioRule>,
     services: &dyn UserServiceControl,
 ) -> Result<(), SetupFailure> {
-    let mut created_rule = None;
-    if let Some(rule) = audio_rule {
-        match apply_with_reload(rule, services) {
-            Ok(RuleChange::Created) => created_rule = Some(rule),
-            Ok(RuleChange::Unchanged) => {}
-            Ok(RuleChange::Removed) => unreachable!(),
+    let mut audio_change = None;
+    if previous_audio_rule.is_some() || desired_audio_rule.is_some() {
+        match reconcile_with_reload(previous_audio_rule, desired_audio_rule, services) {
+            Ok(change) if change.changed() => audio_change = Some(change),
+            Ok(_) => {}
             Err(error) if error.to_string().contains("audio-rule-conflict") => {
                 return Err(SetupFailure::AudioRuleConflict)
             }
@@ -559,8 +641,8 @@ fn commit_persistent(
         }
     }
     if store.save(configuration).is_err() {
-        if let Some(rule) = created_rule {
-            rollback_created(rule, services).map_err(|_| SetupFailure::CleanupFailed)?;
+        if let Some(change) = audio_change.as_ref() {
+            rollback_change(change, services).map_err(|_| SetupFailure::CleanupFailed)?;
         }
         return Err(SetupFailure::ConfigurationWriteFailed);
     }
@@ -619,6 +701,29 @@ async fn existing_candidate(
         && device.is_services_resolved().await.unwrap_or(false)
         && transport::has_complete_ancs(&device).await.unwrap_or(false);
     if !ready {
+        return Ok(None);
+    }
+    Ok(Some(Candidate {
+        kind: ConfirmationKind::ExistingBond,
+        address: address.to_string(),
+        device_name: device
+            .name()
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "iPhone".into()),
+        passkey: None,
+    }))
+}
+
+async fn paired_candidate(
+    adapter: &Adapter,
+    address: Address,
+) -> Result<Option<Candidate>, SetupFailure> {
+    let Some((address, device)) = identity_device(adapter, address).await? else {
+        return Ok(None);
+    };
+    if !device.is_paired().await.unwrap_or(false) || !device.is_trusted().await.unwrap_or(false) {
         return Ok(None);
     }
     Ok(Some(Candidate {
@@ -717,6 +822,7 @@ mod tests {
             schema_version: CONFIG_SCHEMA_VERSION,
             bluetooth: BluetoothConfiguration {
                 adapter: "hci0".into(),
+                adapter_address: Some("11:22:33:44:55:66".into()),
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
             },
@@ -817,25 +923,67 @@ mod tests {
         let failing_store = ConfigurationStore::new(blocker.join("config.toml"));
         let services = FakeServices::default();
         assert_eq!(
-            commit_persistent(&failing_store, &configuration(), Some(&rule), &services,),
+            commit_persistent(
+                &failing_store,
+                &configuration(),
+                None,
+                Some(&rule),
+                &services,
+            ),
             Err(SetupFailure::ConfigurationWriteFailed)
         );
         assert!(!rule.path().exists());
+        assert!(!rule.role_path().exists());
         assert_eq!(*services.restarts.lock().unwrap(), 2);
+
+        std::fs::create_dir_all(rule.path().parent().unwrap()).unwrap();
+        std::fs::write(rule.path(), rule.content()).unwrap();
+        assert_eq!(
+            commit_persistent(
+                &failing_store,
+                &configuration(),
+                Some(&rule),
+                Some(&rule),
+                &services,
+            ),
+            Err(SetupFailure::ConfigurationWriteFailed)
+        );
+        assert!(
+            rule.path().exists(),
+            "preexisting exact-device rule is preserved during role-policy upgrade"
+        );
+        assert!(
+            !rule.role_path().exists(),
+            "new role policy is rolled back after configuration failure"
+        );
+        assert_eq!(*services.restarts.lock().unwrap(), 4);
 
         rule.apply().unwrap();
         assert_eq!(
-            commit_persistent(&failing_store, &configuration(), Some(&rule), &services,),
+            commit_persistent(
+                &failing_store,
+                &configuration(),
+                Some(&rule),
+                Some(&rule),
+                &services,
+            ),
             Err(SetupFailure::ConfigurationWriteFailed)
         );
         assert!(
             rule.path().exists(),
             "preexisting identical rule is preserved"
         );
-        assert_eq!(*services.restarts.lock().unwrap(), 2);
+        assert_eq!(*services.restarts.lock().unwrap(), 4);
 
         let successful_store = ConfigurationStore::new(directory.path().join("config/config.toml"));
-        commit_persistent(&successful_store, &configuration(), Some(&rule), &services).unwrap();
+        commit_persistent(
+            &successful_store,
+            &configuration(),
+            Some(&rule),
+            Some(&rule),
+            &services,
+        )
+        .unwrap();
         assert!(successful_store.load().unwrap().is_some());
     }
 
@@ -854,9 +1002,58 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            commit_persistent(&store, &configuration(), Some(&rule), &services),
+            commit_persistent(&store, &configuration(), None, Some(&rule), &services,),
             Err(SetupFailure::CleanupFailed)
         );
         assert!(!rule.path().exists());
+    }
+
+    #[test]
+    fn disabling_suppression_is_reversible_until_configuration_commits() {
+        let directory = TestDirectory::new("setup-disable-audio");
+        let rule = AudioRule::new(
+            directory.path().join("wp"),
+            "AA:BB:CC:DD:EE:FF".parse().unwrap(),
+        );
+        rule.apply().unwrap();
+        let blocker = directory.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let store = ConfigurationStore::new(blocker.join("config.toml"));
+        let services = FakeServices::default();
+        let mut disabled = configuration();
+        disabled.desktop.suppress_phone_audio = false;
+
+        assert_eq!(
+            commit_persistent(&store, &disabled, Some(&rule), None, &services),
+            Err(SetupFailure::ConfigurationWriteFailed)
+        );
+        assert!(rule.path().exists());
+        assert!(rule.role_path().exists());
+        assert_eq!(*services.restarts.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn setup_commits_false_to_true_and_true_to_false_audio_intent() {
+        let directory = TestDirectory::new("setup-audio-intent");
+        let store = ConfigurationStore::new(directory.path().join("config/config.toml"));
+        let rule = AudioRule::new(
+            directory.path().join("wp"),
+            "AA:BB:CC:DD:EE:FF".parse().unwrap(),
+        );
+        let services = FakeServices::default();
+        let enabled = configuration();
+        let mut disabled = enabled.clone();
+        disabled.desktop.suppress_phone_audio = false;
+
+        commit_persistent(&store, &enabled, None, Some(&rule), &services).unwrap();
+        assert!(rule.path().exists());
+        assert!(rule.role_path().exists());
+        assert!(store.load().unwrap().unwrap().suppress_phone_audio);
+
+        commit_persistent(&store, &disabled, Some(&rule), None, &services).unwrap();
+        assert!(!rule.path().exists());
+        assert!(!rule.role_path().exists());
+        assert!(!store.load().unwrap().unwrap().suppress_phone_audio);
+        assert_eq!(*services.restarts.lock().unwrap(), 2);
     }
 }

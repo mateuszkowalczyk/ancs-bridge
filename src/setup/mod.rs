@@ -2,13 +2,13 @@ use crate::{
     clock::Clock,
     machine::{
         parse_command, validate_command, ConfirmationKind, ProtocolError, SetupCommand, SetupEvent,
-        SetupFailure, SetupState, API_VERSION,
+        SetupFailure, SetupState, API_VERSION, MAX_SETUP_COMMAND_BYTES,
     },
 };
 use async_trait::async_trait;
 use serde::Serialize;
 use std::time::Duration;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 pub mod production;
@@ -75,12 +75,16 @@ where
 {
     async fn next_command(&mut self) -> Result<SetupCommand, SetupFailure> {
         let mut line = String::new();
-        let count = self
+        let mut limited = (&mut *self).take((MAX_SETUP_COMMAND_BYTES + 1) as u64);
+        let count = limited
             .read_line(&mut line)
             .await
             .map_err(|_| SetupFailure::InvalidProtocol)?;
         if count == 0 {
             return Err(SetupFailure::StdinClosed);
+        }
+        if count > MAX_SETUP_COMMAND_BYTES {
+            return Err(SetupFailure::InvalidProtocol);
         }
         parse_command(line.trim_end()).map_err(protocol_failure)
     }
@@ -89,26 +93,32 @@ where
 /// Terminal stdin adapter whose detached blocking reader cannot hold the Tokio
 /// runtime open after setup has emitted its final event.
 pub struct StdinCommandInput {
-    receiver: mpsc::UnboundedReceiver<Result<String, ()>>,
+    receiver: mpsc::Receiver<Result<String, ()>>,
 }
 
 impl StdinCommandInput {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(1);
         std::thread::spawn(move || {
             let stdin = std::io::stdin();
             let mut input = stdin.lock();
             loop {
                 let mut line = String::new();
-                match std::io::BufRead::read_line(&mut input, &mut line) {
+                let mut limited =
+                    std::io::Read::take(&mut input, (MAX_SETUP_COMMAND_BYTES + 1) as u64);
+                match std::io::BufRead::read_line(&mut limited, &mut line) {
                     Ok(0) => break,
+                    Ok(count) if count > MAX_SETUP_COMMAND_BYTES => {
+                        let _ = sender.blocking_send(Err(()));
+                        break;
+                    }
                     Ok(_) => {
-                        if sender.send(Ok(line)).is_err() {
+                        if sender.blocking_send(Ok(line)).is_err() {
                             break;
                         }
                     }
                     Err(_) => {
-                        let _ = sender.send(Err(()));
+                        let _ = sender.blocking_send(Err(()));
                         break;
                     }
                 }
@@ -613,6 +623,21 @@ mod tests {
             assert_eq!(events.last().unwrap()["code"], code);
             assert!(state.lock().unwrap().calls.contains(&"cleanup"));
             assert!(!state.lock().unwrap().calls.contains(&"commit"));
+        }
+    }
+
+    #[tokio::test]
+    async fn command_input_rejects_oversized_terminated_and_unterminated_lines() {
+        for terminated in [false, true] {
+            let mut bytes = vec![b' '; MAX_SETUP_COMMAND_BYTES + usize::from(!terminated)];
+            if terminated {
+                bytes.push(b'\n');
+            }
+            let mut reader = BufReader::new(bytes.as_slice());
+            assert_eq!(
+                reader.next_command().await,
+                Err(SetupFailure::InvalidProtocol)
+            );
         }
     }
 

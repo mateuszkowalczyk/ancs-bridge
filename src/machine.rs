@@ -1,6 +1,7 @@
 use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 
 pub const API_VERSION: u32 = 1;
+pub const MAX_SETUP_COMMAND_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -177,6 +178,9 @@ pub enum ProtocolError {
 }
 
 pub fn parse_command(line: &str) -> Result<SetupCommand, ProtocolError> {
+    if line.len() > MAX_SETUP_COMMAND_BYTES {
+        return Err(ProtocolError::Malformed);
+    }
     let command: WireCommand = serde_json::from_str(line).map_err(|_| ProtocolError::Malformed)?;
     match command {
         WireCommand::Confirm {
@@ -325,6 +329,12 @@ mod tests {
         ] {
             assert_eq!(parse_command(invalid), Err(ProtocolError::Malformed));
         }
+
+        let oversized = format!(
+            r#"{{"v":1,"command":"cancel","padding":"{}"}}"#,
+            "x".repeat(8 * 1024)
+        );
+        assert_eq!(parse_command(&oversized), Err(ProtocolError::Malformed));
     }
 
     #[test]

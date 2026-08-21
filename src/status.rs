@@ -72,6 +72,8 @@ pub struct RuntimeStatus {
     pub state: RuntimeState,
     pub reason_code: Option<String>,
     pub adapter: Option<String>,
+    #[serde(default)]
+    pub adapter_address: Option<String>,
     pub device_address: Option<String>,
     pub device_name: Option<String>,
     pub connected: bool,
@@ -91,6 +93,7 @@ impl RuntimeStatus {
             state: RuntimeState::Unconfigured,
             reason_code: None,
             adapter: None,
+            adapter_address: None,
             device_address: None,
             device_name: None,
             connected: false,
@@ -110,6 +113,7 @@ impl RuntimeStatus {
             state: RuntimeState::Error,
             reason_code: Some("daemon-not-running".into()),
             adapter: Some(configuration.adapter.clone()),
+            adapter_address: configuration.adapter_address.map(|value| value.to_string()),
             device_address: Some(configuration.device_address.to_string()),
             device_name: Some(configuration.device_name.clone()),
             connected: false,
@@ -143,8 +147,10 @@ impl RuntimeStatus {
     }
 
     fn matches_configuration(&self, configuration: &ValidatedConfiguration) -> bool {
+        let adapter_address = configuration.adapter_address.map(|value| value.to_string());
         let address = configuration.device_address.to_string();
         self.adapter.as_deref() == Some(configuration.adapter.as_str())
+            && self.adapter_address == adapter_address
             && self.device_address.as_deref() == Some(address.as_str())
             && self.device_name.as_deref() == Some(configuration.device_name.as_str())
     }
@@ -161,6 +167,7 @@ pub struct StatusOutput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatusIdentity {
     adapter: String,
+    adapter_address: Option<String>,
     device_address: String,
     device_name: String,
 }
@@ -169,6 +176,7 @@ impl From<&ValidatedConfiguration> for StatusIdentity {
     fn from(configuration: &ValidatedConfiguration) -> Self {
         Self {
             adapter: configuration.adapter.clone(),
+            adapter_address: configuration.adapter_address.map(|value| value.to_string()),
             device_address: configuration.device_address.to_string(),
             device_name: configuration.device_name.clone(),
         }
@@ -245,7 +253,6 @@ impl TimestampSource for SystemTimestampSource {
 
 pub struct PersistentStatusWriter<T = SystemTimestampSource> {
     store: StatusStore,
-    identity: StatusIdentity,
     timestamps: T,
     current: RuntimeStatus,
     observed_delivered_count: u64,
@@ -267,9 +274,10 @@ impl<T: TimestampSource> PersistentStatusWriter<T> {
             api_version: MACHINE_API_VERSION,
             state: RuntimeState::WaitingForBluez,
             reason_code: None,
-            adapter: Some(identity.adapter.clone()),
-            device_address: Some(identity.device_address.clone()),
-            device_name: Some(identity.device_name.clone()),
+            adapter: Some(identity.adapter),
+            adapter_address: identity.adapter_address,
+            device_address: Some(identity.device_address),
+            device_name: Some(identity.device_name),
             connected: false,
             services_resolved: false,
             ancs_available: false,
@@ -281,7 +289,6 @@ impl<T: TimestampSource> PersistentStatusWriter<T> {
         };
         Self {
             store,
-            identity,
             timestamps,
             current,
             observed_delivered_count: 0,
@@ -313,9 +320,6 @@ impl<T: TimestampSource> StatusWriter for PersistentStatusWriter<T> {
         }
         self.current.state = snapshot.state;
         self.current.reason_code = reason;
-        self.current.adapter = Some(self.identity.adapter.clone());
-        self.current.device_address = Some(self.identity.device_address.clone());
-        self.current.device_name = Some(self.identity.device_name.clone());
         self.current.connected = snapshot.connected;
         self.current.services_resolved = snapshot.services_resolved;
         self.current.ancs_available = snapshot.ancs_available;
@@ -445,6 +449,7 @@ mod tests {
             schema_version: CONFIG_SCHEMA_VERSION,
             bluetooth: BluetoothConfiguration {
                 adapter: "hci0".into(),
+                adapter_address: Some("11:22:33:44:55:66".into()),
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
             },
@@ -510,6 +515,10 @@ mod tests {
         writer.publish(delivered).await.unwrap();
 
         let status = store.read().unwrap().unwrap();
+        assert_eq!(status.adapter.as_deref(), Some("hci0"));
+        assert_eq!(status.adapter_address.as_deref(), Some("11:22:33:44:55:66"));
+        assert_eq!(status.device_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert_eq!(status.device_name.as_deref(), Some("iPhone"));
         assert_eq!(
             status.last_transition_at.as_deref(),
             Some("2026-08-19T10:00:00Z")
@@ -600,6 +609,7 @@ mod tests {
             state: RuntimeState::Ready,
             reason_code: None,
             adapter: Some("hci0".into()),
+            adapter_address: Some("11:22:33:44:55:66".into()),
             device_address: Some("AA:BB:CC:DD:EE:FF".into()),
             device_name: Some("iPhone".into()),
             connected: true,
@@ -630,6 +640,18 @@ mod tests {
                 .unwrap()
                 .stale
         );
+
+        let mut changed_controller = configured.clone();
+        changed_controller.adapter_address = Some("22:33:44:55:66:77".parse().unwrap());
+        assert!(
+            status_output(
+                Some(&changed_controller),
+                Some(&store),
+                &FakeProcesses(true)
+            )
+            .unwrap()
+            .stale
+        );
     }
 
     #[test]
@@ -644,6 +666,7 @@ mod tests {
             "state": "ready",
             "reasonCode": null,
             "adapter": "hci0",
+            "adapterAddress": "11:22:33:44:55:66",
             "deviceAddress": "AA:BB:CC:DD:EE:FF",
             "deviceName": "iPhone",
             "connected": true,

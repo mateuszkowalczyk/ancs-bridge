@@ -97,6 +97,7 @@ fn fixed_status(stale: bool) -> StatusOutput {
             state: RuntimeState::Ready,
             reason_code: None,
             adapter: Some("hci0".into()),
+            adapter_address: None,
             device_address: Some("AA:BB:CC:DD:EE:FF".into()),
             device_name: Some("iPhone".into()),
             connected: true,

@@ -148,7 +148,14 @@ pub async fn probe(
         }
     };
     let adapters = session.adapter_names().await?;
-    let selection = select_adapter(configured, &adapters);
+    let selection = if let Some(identity) = configured.and_then(|value| value.adapter_address) {
+        match transport::adapter_by_identity(&session, identity).await? {
+            Some(adapter) => AdapterSelection::Selected(adapter.name().to_owned()),
+            None => AdapterSelection::ConfiguredMissing,
+        }
+    } else {
+        select_adapter(configured, &adapters)
+    };
     let adapter = match &selection {
         AdapterSelection::Selected(name) => Some(session.adapter(name)?),
         _ => None,

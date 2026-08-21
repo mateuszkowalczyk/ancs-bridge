@@ -26,7 +26,7 @@ async fn bonded_iphone_ready_notification_and_passive_reconnect() {
         .expect("valid Bluetooth identity address");
     tokio::time::timeout(Duration::from_secs(15 * 60), async move {
         let mut supervisor = Supervisor::new(
-            BluerTransport::new(adapter, device),
+            BluerTransport::new(adapter, None, device),
             FreedesktopSink::default(),
             TokioClock::default(),
             TracingStatusWriter,

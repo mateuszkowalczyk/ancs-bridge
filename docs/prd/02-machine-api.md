@@ -10,7 +10,9 @@ Install `/usr/bin/ancs-bridge` with:
 - `ancs-bridge setup --jsonl --disable-phone-audio`: interactive setup/pairing protocol.
 - `ancs-bridge doctor --json`: checks BlueZ version, adapter central/peripheral roles, LE advertising, existing pairing, WirePlumber availability, and ANCS readiness.
 - `ancs-bridge status --json`: returns current runtime state and remains useful when the status file is stale.
-- `ancs-bridge teardown [--forget-device]`: removes bridge configuration and its exact-device audio rule; optionally forgets the phone.
+- `ancs-bridge teardown [--forget-device]`: removes bridge configuration and
+  its exact-device plus user-level output-only Bluetooth audio rules; optionally
+  forgets the phone.
 - `ancs-bridge version --json`: returns semantic version and machine API version.
 
 JSON-producing commands return nonzero on failure. Stdout is reserved for machine-readable JSON/JSONL; human diagnostics go to stderr.
@@ -24,6 +26,7 @@ schema_version = 1
 
 [bluetooth]
 adapter = "hci0"
+adapter_address = "11:22:33:44:55:66"
 device_address = "AA:BB:CC:DD:EE:FF"
 device_name = "iPhone"
 
@@ -31,7 +34,12 @@ device_name = "iPhone"
 suppress_phone_audio = true
 ```
 
-The Bluetooth address is the bonded BlueZ device identity selected during setup. Validate it before persistence or path generation.
+`adapter_address` is the controller's stable public Bluetooth address;
+`adapter` is its last-known BlueZ kernel name for display and legacy fallback.
+The device address is the bonded BlueZ device identity selected during setup.
+Validate both addresses before persistence or path generation. Existing version
+1 configurations without `adapter_address` remain readable for a one-time,
+explicitly confirmed migration.
 
 ## Runtime status schema
 
@@ -43,6 +51,7 @@ Write atomically to `$XDG_RUNTIME_DIR/ancs-bridge/status.json`:
   "state": "ready",
   "reasonCode": null,
   "adapter": "hci0",
+  "adapterAddress": "11:22:33:44:55:66",
   "deviceAddress": "AA:BB:CC:DD:EE:FF",
   "deviceName": "iPhone",
   "connected": true,
@@ -111,4 +120,3 @@ Protocol requirements:
 - Consumers must reject unsupported API versions and malformed required fields before invoking state-changing commands.
 - Semantic package versions may advance without an API change; a breaking machine-interface change requires API version 2.
 - Command names, required fields, status-state meanings, and JSONL command/event semantics are stable for API version 1.
-

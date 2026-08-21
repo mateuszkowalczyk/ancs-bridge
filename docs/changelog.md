@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-21 — Iteration 007
+
+Iteration: `docs/tasks/archived/iteration-007-field-validation-and-code-audit.md`
+
+- Hardened setup input, ANCS parsing and session resource bounds, lifecycle reconciliation, staging-path safety, and stable Bluetooth-controller identity handling following an independent security and architecture review.
+- Added transactional user-level Bluetooth audio policy that prevents the iPhone from selecting the desktop as a speaker while preserving ANCS and AirPods playback and microphone support.
+- Validated passive recovery after physical range loss and normal reboot/login, automatic service startup, exact notification forwarding, metadata-only diagnostics, and preservation of configuration, bonds, and audio intent.
+
 ## 2026-08-20 — Iteration 006
 
 Iteration: `docs/tasks/archived/iteration-006-runtime-reliability-acceptance.md`
