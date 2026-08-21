@@ -14,7 +14,6 @@ pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub struct Configuration {
     pub schema_version: u32,
     pub bluetooth: BluetoothConfiguration,
-    pub desktop: DesktopConfiguration,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -26,18 +25,12 @@ pub struct BluetoothConfiguration {
     pub device_name: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DesktopConfiguration {
-    pub suppress_phone_audio: bool,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedConfiguration {
     pub adapter: String,
     pub adapter_address: Option<Address>,
     pub device_address: Address,
     pub device_name: String,
-    pub suppress_phone_audio: bool,
 }
 
 impl Configuration {
@@ -69,7 +62,6 @@ impl Configuration {
             adapter_address,
             device_address,
             device_name: self.bluetooth.device_name.clone(),
-            suppress_phone_audio: self.desktop.suppress_phone_audio,
         })
     }
 }
@@ -170,9 +162,6 @@ mod tests {
                 device_address: address.into(),
                 device_name: "iPhone".into(),
             },
-            desktop: DesktopConfiguration {
-                suppress_phone_audio: true,
-            },
         }
     }
 
@@ -203,7 +192,7 @@ mod tests {
         let store = ConfigurationStore::new(directory.path().join("config.toml"));
         fs::write(
             store.path(),
-            "schema_version = 1\n[bluetooth]\nadapter = \"hci0\"\ndevice_address = \"AA:BB:CC:DD:EE:FF\"\ndevice_name = \"iPhone\"\n[desktop]\nsuppress_phone_audio = true\n",
+            "schema_version = 1\n[bluetooth]\nadapter = \"hci0\"\ndevice_address = \"AA:BB:CC:DD:EE:FF\"\ndevice_name = \"iPhone\"\n",
         )
         .unwrap();
         let configuration = store.load().unwrap().unwrap();

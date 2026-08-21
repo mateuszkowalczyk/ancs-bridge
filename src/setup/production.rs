@@ -7,8 +7,8 @@ use crate::{
     audio::{reconcile_with_reload, rollback_change, AudioRule, WIREPLUMBER_UNIT},
     bluetooth::{hid, transport},
     config::{
-        BluetoothConfiguration, Configuration, ConfigurationStore, DesktopConfiguration,
-        ValidatedConfiguration, CONFIG_SCHEMA_VERSION,
+        BluetoothConfiguration, Configuration, ConfigurationStore, ValidatedConfiguration,
+        CONFIG_SCHEMA_VERSION,
     },
     diagnostics::{select_adapter, AdapterSelection},
     machine::{ConfirmationKind, SetupFailure},
@@ -532,7 +532,7 @@ impl SetupBackend for BluerSetupBackend {
     async fn commit(
         &mut self,
         candidate: &Candidate,
-        options: SetupOptions,
+        _options: SetupOptions,
     ) -> Result<(), SetupFailure> {
         let candidate_address: Address = candidate
             .address
@@ -545,22 +545,18 @@ impl SetupBackend for BluerSetupBackend {
         let previous_audio_rule = self
             .configured
             .as_ref()
-            .filter(|configuration| configuration.suppress_phone_audio)
             .map(|configuration| AudioRule::from_environment(configuration.device_address))
             .transpose()
             .map_err(|_| SetupFailure::AudioUnavailable)?;
-        let desired_audio_rule = if options.disable_phone_audio {
-            if !self
-                .services
-                .unit_exists(WIREPLUMBER_UNIT)
-                .map_err(|_| SetupFailure::AudioUnavailable)?
-            {
-                return Err(SetupFailure::AudioUnavailable);
-            }
-            Some(AudioRule::from_environment(address).map_err(|_| SetupFailure::AudioUnavailable)?)
-        } else {
-            None
-        };
+        if !self
+            .services
+            .unit_exists(WIREPLUMBER_UNIT)
+            .map_err(|_| SetupFailure::AudioUnavailable)?
+        {
+            return Err(SetupFailure::AudioUnavailable);
+        }
+        let desired_audio_rule =
+            Some(AudioRule::from_environment(address).map_err(|_| SetupFailure::AudioUnavailable)?);
         let adapter_name = self
             .adapter
             .as_ref()
@@ -582,9 +578,6 @@ impl SetupBackend for BluerSetupBackend {
                 ),
                 device_address: address.to_string(),
                 device_name,
-            },
-            desktop: DesktopConfiguration {
-                suppress_phone_audio: options.disable_phone_audio,
             },
         };
         commit_persistent(
@@ -826,9 +819,6 @@ mod tests {
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
             },
-            desktop: DesktopConfiguration {
-                suppress_phone_audio: true,
-            },
         }
     }
 
@@ -840,23 +830,11 @@ mod tests {
             Ok(None)
         );
         assert_eq!(
-            requested_repair_target(
-                SetupOptions {
-                    repair: true,
-                    ..Default::default()
-                },
-                None,
-            ),
+            requested_repair_target(SetupOptions { repair: true }, None,),
             Err(SetupFailure::RepairTargetUnknown)
         );
         assert_eq!(
-            requested_repair_target(
-                SetupOptions {
-                    repair: true,
-                    ..Default::default()
-                },
-                Some(&validated),
-            ),
+            requested_repair_target(SetupOptions { repair: true }, Some(&validated),),
             Ok(Some("AA:BB:CC:DD:EE:FF".parse().unwrap()))
         );
     }
@@ -1009,31 +987,43 @@ mod tests {
     }
 
     #[test]
-    fn disabling_suppression_is_reversible_until_configuration_commits() {
-        let directory = TestDirectory::new("setup-disable-audio");
-        let rule = AudioRule::new(
+    fn audio_rollback_is_reversible_until_configuration_commits() {
+        let directory = TestDirectory::new("setup-audio-rollback");
+        let old_rule = AudioRule::new(
             directory.path().join("wp"),
             "AA:BB:CC:DD:EE:FF".parse().unwrap(),
         );
-        rule.apply().unwrap();
+        let new_rule = AudioRule::new(
+            directory.path().join("wp"),
+            "11:22:33:44:55:66".parse().unwrap(),
+        );
+        old_rule.apply().unwrap();
         let blocker = directory.path().join("blocker");
         std::fs::write(&blocker, "not a directory").unwrap();
         let store = ConfigurationStore::new(blocker.join("config.toml"));
         let services = FakeServices::default();
-        let mut disabled = configuration();
-        disabled.desktop.suppress_phone_audio = false;
+        let mut replacement = configuration();
+        replacement.bluetooth.device_address = "11:22:33:44:55:66".into();
 
         assert_eq!(
-            commit_persistent(&store, &disabled, Some(&rule), None, &services),
+            commit_persistent(
+                &store,
+                &replacement,
+                Some(&old_rule),
+                Some(&new_rule),
+                &services
+            ),
             Err(SetupFailure::ConfigurationWriteFailed)
         );
-        assert!(rule.path().exists());
-        assert!(rule.role_path().exists());
+        assert!(old_rule.path().exists());
+        assert!(old_rule.role_path().exists());
+        assert!(!new_rule.path().exists());
+        assert!(new_rule.role_path().exists());
         assert_eq!(*services.restarts.lock().unwrap(), 2);
     }
 
     #[test]
-    fn setup_commits_false_to_true_and_true_to_false_audio_intent() {
+    fn setup_always_persists_audio_suppression_intent() {
         let directory = TestDirectory::new("setup-audio-intent");
         let store = ConfigurationStore::new(directory.path().join("config/config.toml"));
         let rule = AudioRule::new(
@@ -1041,19 +1031,13 @@ mod tests {
             "AA:BB:CC:DD:EE:FF".parse().unwrap(),
         );
         let services = FakeServices::default();
-        let enabled = configuration();
-        let mut disabled = enabled.clone();
-        disabled.desktop.suppress_phone_audio = false;
 
-        commit_persistent(&store, &enabled, None, Some(&rule), &services).unwrap();
+        commit_persistent(&store, &configuration(), None, Some(&rule), &services).unwrap();
         assert!(rule.path().exists());
         assert!(rule.role_path().exists());
-        assert!(store.load().unwrap().unwrap().suppress_phone_audio);
-
-        commit_persistent(&store, &disabled, Some(&rule), None, &services).unwrap();
-        assert!(!rule.path().exists());
-        assert!(!rule.role_path().exists());
-        assert!(!store.load().unwrap().unwrap().suppress_phone_audio);
-        assert_eq!(*services.restarts.lock().unwrap(), 2);
+        assert!(!std::fs::read_to_string(store.path())
+            .unwrap()
+            .contains("desktop"));
+        assert_eq!(*services.restarts.lock().unwrap(), 1);
     }
 }

@@ -9,8 +9,8 @@
 - Install only `/usr/bin/ancs-bridge`, the license, and the systemd user unit.
 - Rust/Cargo are make dependencies.
 - BlueZ/D-Bus are runtime dependencies.
-- WirePlumber is optional unless phone-audio suppression and the associated
-  user-level output-only Bluetooth role policy are selected.
+- WirePlumber is a runtime dependency because every configured bridge applies
+  the exact-device and user-level output-only Bluetooth role policy.
 - Do not ship a prebuilt binary in the AUR source package.
 - Do not use package install hooks to enable services, pair devices, modify user configuration, or restart WirePlumber.
 - Generate and commit `.SRCINFO`; validate with `makepkg --cleanbuild` and `namcap` in a clean Arch environment.
@@ -35,7 +35,7 @@ UMask=0077
 
 ## WirePlumber phone-audio policy
 
-When requested, generate atomically:
+For every successful setup, generate atomically:
 
 `~/.config/wireplumber/wireplumber.conf.d/90-ancs-bridge-AA_BB_CC_DD_EE_FF.conf`
 

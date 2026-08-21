@@ -141,7 +141,7 @@ pub async fn probe(
                 configured: configured.is_some(),
                 paired: None,
                 wireplumber_available,
-                wireplumber_required: configured.is_some_and(|value| value.suppress_phone_audio),
+                wireplumber_required: configured.is_some(),
                 connected: None,
                 ancs_ready: None,
             });
@@ -203,7 +203,7 @@ pub async fn probe(
                 configured: true,
                 paired: Some(false),
                 wireplumber_available,
-                wireplumber_required: configuration.suppress_phone_audio,
+                wireplumber_required: true,
                 connected: Some(false),
                 ancs_ready: Some(false),
             });
@@ -230,7 +230,7 @@ pub async fn probe(
         configured: configured.is_some(),
         paired,
         wireplumber_available,
-        wireplumber_required: configured.is_some_and(|value| value.suppress_phone_audio),
+        wireplumber_required: configured.is_some(),
         connected,
         ancs_ready,
     })
@@ -407,19 +407,19 @@ mod tests {
             );
         }
 
-        let mut optional = healthy();
-        optional.configured = false;
-        optional.paired = None;
-        optional.connected = None;
-        optional.ancs_ready = None;
-        optional.wireplumber_available = false;
-        optional.wireplumber_required = false;
-        let output = diagnose(&optional);
+        let mut unconfigured = healthy();
+        unconfigured.configured = false;
+        unconfigured.paired = None;
+        unconfigured.connected = None;
+        unconfigured.ancs_ready = None;
+        unconfigured.wireplumber_available = false;
+        unconfigured.wireplumber_required = false;
+        let output = diagnose(&unconfigured);
         assert!(output.ok);
         assert_eq!(
             output.checks[5].status,
             CheckStatus::Warn,
-            "optional WirePlumber is a warning"
+            "WirePlumber is a warning before setup"
         );
     }
 }

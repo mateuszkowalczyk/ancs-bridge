@@ -32,7 +32,6 @@ pub enum Preparation {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SetupOptions {
-    pub disable_phone_audio: bool,
     pub repair: bool,
 }
 

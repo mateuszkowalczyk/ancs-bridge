@@ -62,9 +62,7 @@ impl TestEnvironment {
                 "\n[bluetooth]\n",
                 "adapter = \"hci0\"\n",
                 "device_address = \"AA:BB:CC:DD:EE:FF\"\n",
-                "device_name = \"iPhone\"\n",
-                "\n[desktop]\n",
-                "suppress_phone_audio = true\n"
+                "device_name = \"iPhone\"\n"
             ),
         )
         .unwrap();
@@ -128,7 +126,7 @@ fn committed_v1_fixtures_match_serialized_contracts() {
 #[test]
 fn version_and_synthesized_status_commands_match_golden_fixtures() {
     let environment = TestEnvironment::new("golden");
-    let version = environment.run(&["version", "--json"]);
+    let version = environment.run(&["version"]);
     assert!(version.status.success());
     assert_eq!(
         String::from_utf8(version.stdout).unwrap(),
@@ -136,7 +134,7 @@ fn version_and_synthesized_status_commands_match_golden_fixtures() {
     );
     assert!(version.stderr.is_empty());
 
-    let unconfigured = environment.run(&["status", "--json"]);
+    let unconfigured = environment.run(&["status"]);
     assert!(unconfigured.status.success());
     assert_eq!(
         String::from_utf8(unconfigured.stdout).unwrap(),
@@ -145,7 +143,7 @@ fn version_and_synthesized_status_commands_match_golden_fixtures() {
     assert!(unconfigured.stderr.is_empty());
 
     environment.write_config();
-    let not_running = environment.run(&["status", "--json"]);
+    let not_running = environment.run(&["status"]);
     assert!(not_running.status.success());
     assert_eq!(
         String::from_utf8(not_running.stdout).unwrap(),
@@ -168,7 +166,7 @@ fn stale_status_preserves_last_snapshot_and_ignores_additive_fields() {
     )
     .unwrap();
 
-    let output = environment.run(&["status", "--json"]);
+    let output = environment.run(&["status"]);
     assert!(output.status.success());
     let output: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(output["state"], "ready");
@@ -182,19 +180,19 @@ fn failures_keep_stdout_empty_and_diagnostics_on_stderr() {
     let environment = TestEnvironment::new("failures");
     fs::create_dir_all(environment.config_path().parent().unwrap()).unwrap();
     fs::write(environment.config_path(), "not = [valid").unwrap();
-    let malformed = environment.run(&["status", "--json"]);
+    let malformed = environment.run(&["status"]);
     assert!(!malformed.status.success());
     assert!(malformed.stdout.is_empty());
     assert!(String::from_utf8(malformed.stderr)
         .unwrap()
         .contains("parsing configuration"));
 
-    let missing_flag = environment.run(&["version"]);
-    assert!(!missing_flag.status.success());
-    assert!(missing_flag.stdout.is_empty());
-    assert!(String::from_utf8(missing_flag.stderr)
+    let obsolete_flag = environment.run(&["version", "--json"]);
+    assert!(!obsolete_flag.status.success());
+    assert!(obsolete_flag.stdout.is_empty());
+    assert!(String::from_utf8(obsolete_flag.stderr)
         .unwrap()
-        .contains("--json"));
+        .contains("unexpected argument '--json'"));
 }
 
 #[test]
@@ -204,7 +202,7 @@ fn live_daemon_is_not_stale_and_becomes_stale_after_exit() {
     let mut daemon = spawn_daemon(&environment);
     wait_for_file(&environment.status_path(), &mut daemon);
 
-    let live = environment.run(&["status", "--json"]);
+    let live = environment.run(&["status"]);
     assert!(live.status.success());
     let live: Value = serde_json::from_slice(&live.stdout).unwrap();
     assert_eq!(live["stale"], false);
@@ -213,7 +211,7 @@ fn live_daemon_is_not_stale_and_becomes_stale_after_exit() {
 
     daemon.kill().unwrap();
     daemon.wait().unwrap();
-    let stale = environment.run(&["status", "--json"]);
+    let stale = environment.run(&["status"]);
     assert!(stale.status.success());
     let stale: Value = serde_json::from_slice(&stale.stdout).unwrap();
     assert_eq!(stale["stale"], true);

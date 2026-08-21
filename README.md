@@ -1,327 +1,122 @@
 # ancs-bridge
 
-`ancs-bridge` is a distribution-neutral, read-only bridge from Apple
-Notification Center Service (ANCS) to Freedesktop desktop notifications. The
-production core is a Rust 2021 crate built on Tokio and `bluer`; it does not
-depend on the third-party `ancs` crate.
+`ancs-bridge` is for Linux desktop users who want iPhone notifications without
+an iPhone companion app or a cloud relay. It uses Apple’s native Notification
+Center Service (ANCS) over Bluetooth LE and forwards notifications locally to
+the desktop.
 
-The daemon reads one versioned configuration from
-`$XDG_CONFIG_HOME/ancs-bridge/config.toml`, falling back to
-`~/.config/ancs-bridge/config.toml`:
+It is a good choice when security and privacy matter: it works locally, sends
+no data to a cloud service, and has no analytics or telemetry. It only reads
+notifications and shows them on the desktop; it never sends actions back to
+the phone. Notification text is not saved, and setup always asks you to
+confirm the phone you are pairing.
 
-```toml
-schema_version = 1
+## Quick start
 
-[bluetooth]
-adapter = "hci0"
-adapter_address = "11:22:33:44:55:66"
-device_address = "AA:BB:CC:DD:EE:FF"
-device_name = "iPhone"
+1. Open a terminal and install `ancs-bridge`:
 
-[desktop]
-suppress_phone_audio = true
-```
+   ```console
+   yay -S ancs-bridge
+   ```
 
-Interactive setup creates this file only after the confirmed phone reaches
-ANCS readiness and all temporary BlueZ state has been cleaned up. The
-production daemon itself takes no device-selection arguments:
+2. Before setup, remove any existing pairing between the iPhone and computer
+   on both devices. On the iPhone, tap the information button next to
+   **omarchy**, then tap **Forget This Device**. On the computer, remove the
+   iPhone from the list of paired Bluetooth devices.
 
-```console
-cargo run -- daemon
-```
+3. Start setup and leave the terminal open:
 
-It never powers the adapter and has no generic `Device1.Connect()` recovery
-path. The bonded iPhone reconnects to the retained connectable,
-non-discoverable HID advertisement.
+   ```console
+   ancs-bridge setup
+   ```
 
-Configuration writes provided by the library are atomic and replace the file
-with mode `0600`. Stable controller and bonded-device identity addresses are
-validated before any BlueZ transport or object path is constructed. The
-controller address lets the daemon resolve the current kernel-assigned `hciN`
-name after re-enumeration or reboot.
+4. On your iPhone, open **Settings → Bluetooth**.
 
-## Diagnostics and setup
+5. Under **Other Devices**, tap **omarchy**. Always start a new pairing from
+   the iPhone, not from the computer's Bluetooth settings.
 
-Run the seven stable environment/readiness checks before setup:
+6. When the terminal shows a `confirmation-request`, check that its phone and
+   pairing code match your iPhone. Copy its `requestId`, replace
+   `PASTE_REQUEST_ID_HERE` below, and paste the completed line into the same
+   terminal:
 
-```console
-ancs-bridge doctor --json
-```
+   ```json
+   {"v":1,"command":"confirm","requestId":"PASTE_REQUEST_ID_HERE","accept":true}
+   ```
 
-`doctor` always emits one complete JSON result when probes can be constructed.
-Warnings cover unconfigured or transient states; any failed check makes `ok`
-false and the exit status nonzero. It never powers an adapter or selects among
-multiple unconfigured adapters.
+7. Wait until the terminal shows `"event":"complete"`.
 
-Setup is a bidirectional JSON Lines protocol:
+8. Start the notification service and make it start automatically when you log
+   in:
 
-```console
-ancs-bridge setup --jsonl [--disable-phone-audio] [--repair]
-```
+   ```console
+   systemctl --user enable --now ancs-bridge.service
+   ```
 
-The caller reads and reacts to each flushed event before sending a command.
-For example, after a `confirmation-request`, send the exact opaque request ID:
+9. Wait a few seconds, then check that the service reports `"state":"ready"`:
 
-```json
-{"v":1,"command":"confirm","requestId":"setup-1","accept":true}
-```
+   ```console
+   ancs-bridge status
+   ```
 
-The candidate, confirmation, and ANCS deadlines are five minutes, 30 seconds,
-and 60 seconds. Reject, cancel, malformed or unsupported input, stdin closure,
-timeout, SIGINT, and SIGTERM emit a stable final error and attempt full cleanup.
-Setup reuses a unique ready bond only after confirmation. A configured but
-unready bond returns `repair-required`; rerun with `--repair` to authorize
-forgetting only that configured identity. Configuration is atomically written
-last, and setup never calls generic `Device1.Connect()`.
+10. Create a reminder or another notification on your iPhone. It should now
+   appear on your desktop.
 
-SIGKILL, power loss, or a machine crash cannot run in-process cleanup. If that
-happens during the pairing window, inspect `bluetoothctl show` and restore the
-adapter's previous `Pairable` and `Discoverable` values before retrying. BlueZ
-removes the process-owned agent, advertisement, and GATT application when its
-D-Bus connection disappears.
+The package only installs the program and service file. It does not pair a
+phone, change your settings, or start the service without your confirmation.
 
-## Machine API v1
+## Integration
 
-Two stable JSON commands are available:
+The CLI is designed for frontends and scripts:
 
 ```console
-$ cargo run --quiet -- version --json
-{"apiVersion":1,"version":"0.1.0"}
-$ cargo run --quiet -- status --json
-{"apiVersion":1,"state":"unconfigured","reasonCode":null,"adapter":null,"deviceAddress":null,"deviceName":null,"connected":false,"servicesResolved":false,"ancsAvailable":false,"subscribed":false,"lastErrorCode":null,"lastTransitionAt":null,"lastNotificationAt":null,"pid":null,"stale":false}
-```
-
-The daemon atomically publishes owner-only runtime state at
-`$XDG_RUNTIME_DIR/ancs-bridge/status.json`. `status --json` verifies the
-recorded PID is a live `ancs-bridge daemon` and that the snapshot identity still
-matches configuration. It preserves a stopped daemon's last snapshot with
-`stale: true`; an unconfigured installation returns `unconfigured`, while a
-configured installation with no snapshot returns `daemon-not-running`.
-
-Single-result machine commands write exactly one JSON object to stdout. Setup
-reserves stdout for flushed JSONL. Human diagnostics always use stderr. The
-committed v1 fixtures live in `tests/fixtures/machine-api-v1/`.
-
-## Phone audio suppression and teardown
-
-`--disable-phone-audio` owns one exact-device WirePlumber rule for the confirmed
-identity at
-`$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d/90-ancs-bridge-AA_BB_CC_DD_EE_FF.conf`.
-That rule disables only `bluez_card.AA_BB_CC_DD_EE_FF`. A second user-level
-rule at `91-ancs-bridge-bluetooth-output-only.conf` retains only Bluetooth
-audio-source, LE audio-source, and hands-free gateway roles. This preserves
-AirPods-class playback and microphones while preventing phones from selecting
-Omarchy as a speaker or headset. It changes no `/etc` or system-wide BlueZ
-configuration.
-
-The two rules are applied and removed transactionally with at most one
-WirePlumber restart. Identical application/removal is a no-op, while different
-content at either owned path is preserved and reported as
-`audio-rule-conflict`. A later setup failure rolls back only rules created by
-that setup transaction.
-
-Remove bridge-owned state with:
-
-```console
+ancs-bridge version
+ancs-bridge status
+ancs-bridge doctor
+ancs-bridge setup [--repair]
 ancs-bridge teardown [--forget-device]
 ```
 
-Teardown is silent and idempotent. It stops/disables the user service when the
-unit exists, removes both audio rules and reloads WirePlumber, optionally
-forgets only the configured bond, then deletes configuration last. Any required
-cleanup failure restores the previous rules where necessary and retains
-configuration so the same command can be retried safely.
+Successful machine commands emit one JSON object per result without requiring
+an output-format flag. Setup instead streams one JSON object per line and
+accepts the same format on stdin. stdout is reserved for machine data, while
+diagnostics use stderr. Status and diagnostics never contain notification
+titles, bodies, or app payloads. The user service starts at login only after it
+has been explicitly enabled.
 
-## systemd user service
-
-The foreground daemon remains useful for development:
-
-```console
-./target/release/ancs-bridge daemon
-```
-
-Until the source-built AUR package is available, build and manually install
-the three final artifacts from a trusted checkout:
+## Troubleshooting
 
 ```console
-cargo build --offline --locked --release
-sudo install -Dm755 target/release/ancs-bridge /usr/bin/ancs-bridge
-sudo install -Dm644 LICENSE /usr/share/licenses/ancs-bridge/LICENSE
-sudo install -Dm644 packaging/ancs-bridge.service /usr/lib/systemd/user/ancs-bridge.service
-systemctl --user daemon-reload
-```
-
-Installation does not enable the service or change pairing/configuration. Run
-setup successfully first, then explicitly enable automatic login startup:
-
-```console
-systemctl --user enable --now ancs-bridge.service
-systemctl --user status --no-pager ancs-bridge.service
-ancs-bridge status --json
+systemctl --user status ancs-bridge.service
 journalctl --user-unit=ancs-bridge.service --no-pager
+ancs-bridge doctor
+ancs-bridge status
 ```
 
-An unexpected daemon failure restarts after three seconds. Deliberate stop,
-start, disable, and re-enable operations are explicit:
+The daemon does not force Bluetooth power or use generic Bluetooth connection
+attempts for routine recovery. If setup is interrupted by a crash or power
+loss, check the adapter’s `Pairable` and `Discoverable` values before retrying.
 
-```console
-systemctl --user stop ancs-bridge.service
-systemctl --user start ancs-bridge.service
-systemctl --user disable --now ancs-bridge.service
-systemctl --user enable --now ancs-bridge.service
-```
+The validated target is Arch Linux with BlueZ and a desktop notification D-Bus
+session. Other adapters are experimental until they pass the same acceptance
+checks.
 
-For bridge-owned configuration, optional audio-rule, and optional exact bond
-cleanup, run `ancs-bridge teardown [--forget-device]` before uninstalling.
-Manual binary/unit removal alone intentionally preserves those user resources:
+## Development
 
-```console
-systemctl --user disable --now ancs-bridge.service
-sudo rm -f /usr/bin/ancs-bridge
-sudo rm -f /usr/lib/systemd/user/ancs-bridge.service
-sudo rm -f /usr/share/licenses/ancs-bridge/LICENSE
-systemctl --user daemon-reload
-```
-
-`packaging/stage-install.sh` reproduces the artifact layout under a non-root
-`DESTDIR` for inspection; it intentionally refuses `/` and performs no service
-or user-state changes. AUR packaging, install hooks, `.SRCINFO`, and release
-publication remain deferred.
-
-## Production modules
-
-- `bluetooth::hid` constructs the encrypted, keyboard-shaped HID-over-GATT
-  service and runtime HID/ANCS advertisement. There is no input-report send
-  path.
-- `bluetooth::transport` owns the BlueZ session, GATT/advertisement RAII
-  handles, configured device, ANCS discovery, ordered subscriptions, and
-  explicit Control Point write requests.
-- `bluetooth::supervisor` reconciles the runtime state every five seconds and
-  applies the 1/2/5/10/30-second BlueZ recovery backoff.
-- `ancs::codec` strictly validates bounded Notification Source and incremental
-  Data Source protocol data.
-- `ancs::session` serializes Control Point work and owns the active session's
-  UID queue, desktop handles, and app-name cache.
-- `config` resolves XDG paths, validates the versioned TOML model, and performs
-  atomic owner-only replacement.
-- `diagnostics`, `machine`, `setup`, `audio`, `service`, and `teardown` own the
-  machine protocol and transactional device lifecycle behind fakeable bounds.
-- `notification`, `clock`, and `status` provide production implementations and
-  deterministic fakes. Status publication adds RFC 3339 transition and
-  successful-delivery timestamps without payload fields.
-
-Notification payload is held in a dedicated type that cannot be debugged,
-displayed, cloned, or serialized. Configuration, status, and tracing expose
-only device metadata, state, stable reason/error codes, timestamps, UIDs, and
-counters. Freedesktop delivery runs on a dedicated actor because the
-synchronous `notify-rust` D-Bus handle is not `Send`.
-
-## Automated validation
+The source tree includes the systemd user unit. Common development checks are:
 
 ```console
 cargo fmt --all -- --check
-cargo clippy --offline --all-targets --all-features -- -D warnings
-cargo test --offline --all-targets
+cargo clippy --offline --locked --all-targets --all-features -- -D warnings
+cargo test --offline --locked --all-targets
 cargo build --offline --locked --release
 ```
 
-The RustSec audit ignores two `quick-xml` advisories that enter `Cargo.lock`
-only through `notify-rust`'s Windows-only backend. The affected crate is absent
-from the Linux dependency tree (`cargo tree -i quick-xml` prints nothing):
+The package installs only the daemon, MIT license, and user unit. It never
+enables services, pairs devices, changes user configuration, or restarts
+WirePlumber during installation. Use `ancs-bridge teardown` before removing
+bridge-owned configuration, audio rules, or the optional bond.
 
-```console
-cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
-```
+## License
 
-`bluer 0.17.3` currently emits upstream Rust future-compatibility warnings
-about never-type fallback. They do not affect the Rust 2021 build. Inspect the
-current compiler report with `cargo report future-incompatibilities` and
-reevaluate when upgrading `bluer` or the crate edition.
-
-## Opt-in hardware smoke
-
-The ignored smoke test uses only production modules and requires an already
-bonded/authorized iPhone. It records states and counts, never notification
-content:
-
-```console
-ANCS_BRIDGE_SMOKE_ADAPTER=hci0 \
-ANCS_BRIDGE_SMOKE_DEVICE=AA:BB:CC:DD:EE:FF \
-RUST_LOG=info \
-cargo test --test hardware_smoke \
-  bonded_iphone_ready_notification_and_passive_reconnect \
-  -- --ignored --nocapture --test-threads=1
-```
-
-Follow its prompts to send a notification, turn iPhone Bluetooth off and on,
-and send a second notification after `ready` returns. The test has a 15-minute
-overall timeout and never selects, pairs, powers, or explicitly connects a
-device.
-
-## Runtime reliability acceptance
-
-The service-managed hardware matrix is split into resumable, operator-gated
-stages. It requires the installed and enabled user service, the configured
-iPhone, a second device that can send notifications, and AirPods for the final
-audio check. Run a stage from the trusted source checkout with:
-
-```console
-ANCS_BRIDGE_ACCEPTANCE=1 \
-ANCS_BRIDGE_ACCEPTANCE_STAGE=baseline \
-cargo test --offline --test hardware_acceptance \
-  service_runtime_reliability_acceptance \
-  -- --ignored --nocapture --test-threads=1
-```
-
-Replace `baseline` with each stage in this order:
-
-1. `notifications` — follows prompts for TickTick and Apple Reminders
-   notifications while locked/unlocked with iPhone previews set to Always,
-   When Unlocked, and Never. These locally triggered sources avoid requiring a
-   second Messages account.
-2. `lifecycle` — creates a due Apple Reminder on the iPhone, edits the synced
-   reminder from a same-account iPad, and clears it on the iPhone to confirm
-   live Added, Modified, and Removed create/replace/close behavior.
-3. `service-restart`, `bluez-restart`, and `adapter-cycle` — exercise process,
-   BlueZ, and controller recovery. The BlueZ stage prompts you to run its
-   `sudo systemctl restart bluetooth.service` command in another terminal;
-   every system-affecting action is announced before it runs.
-4. `iphone-cycle` and `range-loss` — require the prompted physical iPhone
-   actions and must recover passively without reopening its Omarchy entry.
-5. `suspend` — leave the test process open, suspend or close the lid, resume
-   and unlock, then press Enter so the same process verifies reconciliation.
-6. `endurance` — passively observes a one-tap iPhone Shortcut that repeats:
-   Bluetooth off, wait 10 seconds, Bluetooth on, wait 30 seconds. Put those
-   four actions inside a Repeat block set to 20. The desktop never calls
-   `Device1.Connect()`; only starting the Shortcut and the pre-run/post-run
-   notification canaries require operator action. If the Shortcut ends early,
-   turn Bluetooth on before retrying the stage.
-7. `privacy` — accepts a user-chosen canary with terminal echo disabled, waits
-   for its delivery, and scans configuration, runtime status/files, CLI and
-   service diagnostics, the current-boot journal, installed artifacts, and
-   setup diagnostic fixtures without writing the canary or scanned content.
-8. `final` — verifies the service, adapter, both audio rules, WirePlumber, an
-   off/disabled configured-phone audio card when present, no active phone audio
-   nodes, and no phone-facing local Bluetooth audio roles, then asks for iPhone
-   output-picker absence plus AirPods playback and microphone confirmation.
-
-For reboot/login acceptance, first finish a passing `baseline` stage and
-confirm the service is enabled. Reboot normally, return to this checkout after
-login, and run the same command with `ANCS_BRIDGE_ACCEPTANCE_STAGE=reboot`.
-The post-reboot stage proves automatic service startup, `ready`, and one fresh
-notification without relying on a pre-reboot test process or temporary file.
-
-Automated waits are bounded: ordinary readiness and notification steps allow
-three minutes, disconnect observation allows 45 seconds, and range-return,
-suspend, and post-login recovery allow five minutes. Time spent at an explicit
-operator prompt is intentionally unbounded and can be cancelled with Ctrl-C;
-rerun only that stage afterward. Stage output is metadata-only and includes
-state, PID/restart count, configuration digest, bond count, adapter/audio
-invariants, RSS/file-descriptor counts, and pass/fail markers—never notification
-titles or bodies.
-
-## Spike boundary
-
-The `spike/` crate and the archived feasibility report are experimental
-evidence only. Production code does not import the spike crate, and changes
-should continue in the root package and PMD iterations.
+MIT. See [LICENSE](LICENSE).

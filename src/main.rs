@@ -14,7 +14,7 @@ use ancs_bridge::{
     teardown::{BluezBondCleanup, Teardown},
 };
 use anyhow::{anyhow, Context, Result};
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use serde::Serialize;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -36,26 +36,13 @@ enum Command {
     /// Run the configured long-lived bridge.
     Daemon,
     /// Return the current machine-readable runtime status.
-    Status {
-        #[arg(long, required = true, action = ArgAction::SetTrue)]
-        json: bool,
-    },
+    Status,
     /// Return package and machine API versions.
-    Version {
-        #[arg(long, required = true, action = ArgAction::SetTrue)]
-        json: bool,
-    },
+    Version,
     /// Return stable environment and readiness diagnostics.
-    Doctor {
-        #[arg(long, required = true, action = ArgAction::SetTrue)]
-        json: bool,
-    },
+    Doctor,
     /// Configure one explicitly confirmed iPhone.
     Setup {
-        #[arg(long, required = true, action = ArgAction::SetTrue)]
-        jsonl: bool,
-        #[arg(long)]
-        disable_phone_audio: bool,
         #[arg(long)]
         repair: bool,
     },
@@ -84,24 +71,14 @@ async fn main() {
 async fn run() -> Result<()> {
     match Cli::parse().command {
         Command::Daemon => daemon().await,
-        Command::Status { json: true } => status(),
-        Command::Version { json: true } => write_json(&VersionOutput {
+        Command::Status => status(),
+        Command::Version => write_json(&VersionOutput {
             api_version: MACHINE_API_VERSION,
             version: env!("CARGO_PKG_VERSION"),
         }),
-        Command::Doctor { json: true } => doctor().await,
-        Command::Setup {
-            jsonl: true,
-            disable_phone_audio,
-            repair,
-        } => setup(disable_phone_audio, repair).await,
+        Command::Doctor => doctor().await,
+        Command::Setup { repair } => setup(repair).await,
         Command::Teardown { forget_device } => teardown(forget_device).await,
-        Command::Status { json: false }
-        | Command::Version { json: false }
-        | Command::Doctor { json: false }
-        | Command::Setup { jsonl: false, .. } => {
-            unreachable!("clap requires --json")
-        }
     }
 }
 
@@ -118,7 +95,7 @@ async fn doctor() -> Result<()> {
     }
 }
 
-async fn setup(disable_phone_audio: bool, repair: bool) -> Result<()> {
+async fn setup(repair: bool) -> Result<()> {
     let store = ConfigurationStore::from_environment()?;
     let configured = store.load()?;
     let services = Arc::new(SystemdUserServiceControl);
@@ -127,14 +104,7 @@ async fn setup(disable_phone_audio: bool, repair: bool) -> Result<()> {
     let mut input = StdinCommandInput::new();
     let mut output = tokio::io::stdout();
     let successful = protocol
-        .run(
-            &mut input,
-            &mut output,
-            SetupOptions {
-                disable_phone_audio,
-                repair,
-            },
-        )
+        .run(&mut input, &mut output, SetupOptions { repair })
         .await;
     if successful {
         Ok(())

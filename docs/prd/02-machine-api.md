@@ -7,13 +7,14 @@ This is the canonical contract consumed by external frontends, including `omarch
 Install `/usr/bin/ancs-bridge` with:
 
 - `ancs-bridge daemon`: long-running bridge used by systemd.
-- `ancs-bridge setup --jsonl --disable-phone-audio`: interactive setup/pairing protocol.
-- `ancs-bridge doctor --json`: checks BlueZ version, adapter central/peripheral roles, LE advertising, existing pairing, WirePlumber availability, and ANCS readiness.
-- `ancs-bridge status --json`: returns current runtime state and remains useful when the status file is stale.
+- `ancs-bridge setup`: interactive setup/pairing protocol with the
+  phone-audio policy applied automatically.
+- `ancs-bridge doctor`: checks BlueZ version, adapter central/peripheral roles, LE advertising, existing pairing, WirePlumber availability, and ANCS readiness.
+- `ancs-bridge status`: returns current runtime state and remains useful when the status file is stale.
 - `ancs-bridge teardown [--forget-device]`: removes bridge configuration and
   its exact-device plus user-level output-only Bluetooth audio rules; optionally
   forgets the phone.
-- `ancs-bridge version --json`: returns semantic version and machine API version.
+- `ancs-bridge version`: returns semantic version and machine API version.
 
 JSON-producing commands return nonzero on failure. Stdout is reserved for machine-readable JSON/JSONL; human diagnostics go to stderr.
 
@@ -30,8 +31,6 @@ adapter_address = "11:22:33:44:55:66"
 device_address = "AA:BB:CC:DD:EE:FF"
 device_name = "iPhone"
 
-[desktop]
-suppress_phone_audio = true
 ```
 
 `adapter_address` is the controller's stable public Bluetooth address;
@@ -85,7 +84,9 @@ Valid states:
 
 ## Setup JSON Lines protocol
 
-`ancs-bridge setup --jsonl --disable-phone-audio` reads one JSON object per stdin line and writes one JSON object per stdout line.
+`ancs-bridge setup` reads one JSON object per stdin line and writes one
+JSON object per stdout line. Every successful setup applies the exact-device
+and user-level output-only Bluetooth audio policy.
 
 Required daemon events include:
 
@@ -109,13 +110,15 @@ Protocol requirements:
 - Confirmation IDs are opaque and must match exactly.
 - Confirmation contains the incoming device name/address and six-digit passkey when BlueZ supplies one.
 - Reject, cancel, timeout, stdin closure, or process failure must not persist partial configuration.
-- `complete` is emitted only after confirmed pairing/trust, atomic configuration write, requested audio-rule application, and temporary adapter-state restoration succeed.
+- `complete` is emitted only after confirmed pairing/trust, atomic
+  configuration write, audio-rule application, and temporary adapter-state
+  restoration succeed.
 - `error.code` is stable and `recoverable` tells the caller whether retrying the current workflow is meaningful.
 - Malformed input returns an error event or nonzero exit without executing unintended commands.
 
 ## Compatibility rules
 
-- `version --json`, `doctor --json`, `status --json`, runtime status, and setup JSONL identify API version 1.
+- `version`, `doctor`, `status`, runtime status, and setup JSONL identify API version 1.
 - Consumers ignore unknown additive object fields.
 - Consumers must reject unsupported API versions and malformed required fields before invoking state-changing commands.
 - Semantic package versions may advance without an API change; a breaking machine-interface change requires API version 2.

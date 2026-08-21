@@ -83,12 +83,10 @@ impl Teardown {
         if let Err(error) = self.services.stop_and_disable(BRIDGE_UNIT) {
             failures.push(format!("service cleanup: {error:#}"));
         }
-        if configuration.suppress_phone_audio {
-            let rule = AudioRule::new(self.config_home.clone(), configuration.device_address);
-            match remove_with_reload(&rule, self.services.as_ref()) {
-                Ok(_) => {}
-                Err(error) => failures.push(format!("audio rule cleanup: {error:#}")),
-            }
+        let rule = AudioRule::new(self.config_home.clone(), configuration.device_address);
+        match remove_with_reload(&rule, self.services.as_ref()) {
+            Ok(_) => {}
+            Err(error) => failures.push(format!("audio rule cleanup: {error:#}")),
         }
         if forget_device {
             if let Err(error) = self
@@ -117,9 +115,7 @@ mod tests {
     use super::*;
     use crate::{
         atomic_file::test_support::TestDirectory,
-        config::{
-            BluetoothConfiguration, Configuration, DesktopConfiguration, CONFIG_SCHEMA_VERSION,
-        },
+        config::{BluetoothConfiguration, Configuration, CONFIG_SCHEMA_VERSION},
     };
     use std::sync::Mutex;
 
@@ -175,7 +171,7 @@ mod tests {
         }
     }
 
-    fn configuration(suppress: bool) -> Configuration {
+    fn configuration() -> Configuration {
         Configuration {
             schema_version: CONFIG_SCHEMA_VERSION,
             bluetooth: BluetoothConfiguration {
@@ -183,9 +179,6 @@ mod tests {
                 adapter_address: Some("11:22:33:44:55:66".into()),
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
-            },
-            desktop: DesktopConfiguration {
-                suppress_phone_audio: suppress,
             },
         }
     }
@@ -220,7 +213,7 @@ mod tests {
             let services = Arc::new(FakeServices::default());
             let bonds = Arc::new(FakeBonds::default());
             let (teardown, store) = harness(&directory, services.clone(), bonds.clone());
-            store.save(&configuration(true)).unwrap();
+            store.save(&configuration()).unwrap();
             let rule = AudioRule::new(
                 directory.path().to_owned(),
                 "AA:BB:CC:DD:EE:FF".parse().unwrap(),
@@ -254,7 +247,7 @@ mod tests {
                 ..Default::default()
             });
             let (teardown, store) = harness(&directory, services, bonds);
-            store.save(&configuration(true)).unwrap();
+            store.save(&configuration()).unwrap();
             let rule = AudioRule::new(
                 directory.path().to_owned(),
                 "AA:BB:CC:DD:EE:FF".parse().unwrap(),
@@ -277,7 +270,7 @@ mod tests {
             Arc::new(FakeServices::default()),
             Arc::new(FakeBonds::default()),
         );
-        store.save(&configuration(true)).unwrap();
+        store.save(&configuration()).unwrap();
         let rule = AudioRule::new(
             directory.path().to_owned(),
             "AA:BB:CC:DD:EE:FF".parse().unwrap(),

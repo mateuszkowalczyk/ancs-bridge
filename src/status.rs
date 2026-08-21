@@ -438,9 +438,7 @@ mod tests {
     use super::*;
     use crate::{
         atomic_file::test_support::TestDirectory,
-        config::{
-            BluetoothConfiguration, Configuration, DesktopConfiguration, CONFIG_SCHEMA_VERSION,
-        },
+        config::{BluetoothConfiguration, Configuration, CONFIG_SCHEMA_VERSION},
     };
     use std::{collections::VecDeque, os::unix::fs::PermissionsExt};
 
@@ -452,9 +450,6 @@ mod tests {
                 adapter_address: Some("11:22:33:44:55:66".into()),
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
-            },
-            desktop: DesktopConfiguration {
-                suppress_phone_audio: true,
             },
         }
         .validate()

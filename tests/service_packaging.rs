@@ -129,7 +129,7 @@ fn staged_install_has_only_final_artifacts_and_no_state_mutation() {
         "bluetoothctl",
         "wireplumber",
         "config.toml",
-        "setup --jsonl",
+        "ancs-bridge setup",
     ] {
         assert!(
             !normalized.contains(forbidden),

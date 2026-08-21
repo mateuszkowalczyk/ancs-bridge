@@ -62,9 +62,9 @@ metadata-only recoverable error and cannot terminate the Bluetooth session.
 Notification app identifiers, titles, messages, and other payload values never
 appear in status files, status output, or status-write diagnostics.
 
-## `status --json`
+## `status`
 
-On success, `ancs-bridge status --json` writes exactly one version 1 status
+On success, `ancs-bridge status` writes exactly one version 1 status
 object to stdout. It adds one field to the persisted schema:
 
 ```json
@@ -92,9 +92,9 @@ A malformed configuration, malformed status document, unsupported schema/API
 version, or unexpected filesystem failure produces no stdout, writes a concise
 diagnostic to stderr, and exits nonzero.
 
-## `version --json`
+## `version`
 
-On success, `ancs-bridge version --json` writes exactly this shape to stdout,
+On success, `ancs-bridge version` writes exactly this shape to stdout,
 followed by a newline:
 
 ```json
@@ -112,7 +112,7 @@ the machine API v1 compatibility rules, but these two fields remain required.
   replacement of files that already exist with broader permissions.
 - Runtime status reflects supervisor transitions and successful notification
   delivery without persisting notification payloads.
-- `status --json` deterministically distinguishes live, stale, unconfigured,
+- `status` deterministically distinguishes live, stale, unconfigured,
   and configured-but-not-running cases using only the `stale` addition.
-- `version --json` and every successful status result match committed machine
+- `version` and every successful status result match committed machine
   API v1 fixtures; failures keep stdout empty and return nonzero.

@@ -187,7 +187,7 @@ fn command(label: &str) -> (Command, PathBuf) {
 fn setup_subprocess_flushes_jsonl_and_separates_stderr() {
     let (mut command, root) = command("flush");
     let mut child = command
-        .args(["setup", "--jsonl"])
+        .args(["setup"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -231,7 +231,7 @@ fn setup_subprocess_rejects_unsupported_api_cancel_and_stdin_closure() {
     ] {
         let (mut command, root) = command(label);
         let mut child = command
-            .args(["setup", "--jsonl"])
+            .args(["setup"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -263,7 +263,7 @@ fn setup_subprocess_rejects_unsupported_api_cancel_and_stdin_closure() {
 #[test]
 fn doctor_is_one_json_line_and_empty_teardown_has_no_stdout() {
     let (mut doctor, root) = command("doctor");
-    let output = doctor.args(["doctor", "--json"]).output().unwrap();
+    let output = doctor.args(["doctor"]).output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert_eq!(stdout.lines().count(), 1);
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();

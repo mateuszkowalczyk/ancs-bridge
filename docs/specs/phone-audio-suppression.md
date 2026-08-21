@@ -86,16 +86,14 @@ replaced during intent/identity reconciliation, then reloads the restored
 policy. Teardown likewise restores removed canonical rules and reloads the
 rollback. Configuration is retained whenever cleanup must be retried.
 
-WirePlumber is optional when suppression is not requested. When
-`--disable-phone-audio` is selected, unavailable WirePlumber, an unavailable
-user service manager, a conflicting rule, or a failed restart prevents setup
-completion and configuration commit.
+WirePlumber is required for every configured bridge. An unavailable
+WirePlumber service, an unavailable user service manager, a conflicting rule,
+or a failed restart prevents setup completion and configuration commit.
 
 ## Ownership and rollback
 
-The bridge records suppression intent in configuration. It owns only the two
-canonical paths and their exact canonical content. It never scans wildcard
-paths for deletion.
+The bridge always owns the two canonical paths and their exact canonical
+content. It never scans wildcard paths for deletion.
 
 When a later setup step fails, rollback reverses the complete rule-set change:
 it removes only rules newly created by that transaction, restores any previous

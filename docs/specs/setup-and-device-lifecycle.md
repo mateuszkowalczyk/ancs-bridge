@@ -28,9 +28,9 @@ powered and supports the required central and peripheral roles plus LE
 advertising. All adapter names, controller addresses, and device identity
 addresses are validated before use in D-Bus paths or persisted configuration.
 
-## `doctor --json`
+## `doctor`
 
-`ancs-bridge doctor --json` writes exactly one object with this shape:
+`ancs-bridge doctor` writes exactly one object with this shape:
 
 ```json
 {
@@ -60,8 +60,8 @@ stable unvalidated-version warning rather than rejected solely by its number.
 No unambiguous adapter, a powered-off adapter, missing required roles, or
 unavailable LE advertising is a failure. A missing pairing is a warning when
 unconfigured and a failure when configuration names that missing bond.
-WirePlumber absence is a warning unless configured audio suppression requires
-it. A disconnected phone or ANCS that is not currently ready is a warning
+WirePlumber absence is a warning before setup and a failure for a configured
+bridge. A disconnected phone or ANCS that is not currently ready is a warning
 because setup or normal reconnection may resolve it.
 
 Doctor emits its complete JSON result even when checks fail and exits nonzero
@@ -74,7 +74,7 @@ exits nonzero. No notification payload or localized prose appears in JSON.
 The command is:
 
 ```text
-ancs-bridge setup --jsonl [--disable-phone-audio] [--repair]
+ancs-bridge setup [--repair]
 ```
 
 Setup reads one JSON command per stdin line and emits one JSON event per stdout
@@ -145,13 +145,13 @@ trusted, waits for complete ANCS readiness, and then removes temporary ANCS
 subscriptions. It restores adapter settings and unregisters the temporary
 agent, advertisement, and GATT application before applying persistent changes.
 
-Setup next reconciles the previously configured audio intent and phone identity
-to the newly requested state. This can create both rules, remove both rules,
-repair a missing canonical rule, or replace only the exact-device rule when the
-confirmed identity changes. The two rule paths are preflighted and changed as
-one transaction with at most one WirePlumber restart. Configuration is written
-atomically last. If configuration persistence fails, setup restores the prior
-rule set and reloads WirePlumber before reporting failure.
+Setup next reconciles the previously configured phone identity to the newly
+confirmed identity while always applying both audio rules. This can create both
+rules, repair a missing canonical rule, or replace only the exact-device rule
+when the confirmed identity changes. The two rule paths are preflighted and
+changed as one transaction with at most one WirePlumber restart. Configuration
+is written atomically last. If configuration persistence fails, setup restores
+the prior rule set and reloads WirePlumber before reporting failure.
 
 Success is emitted only after every required step succeeds:
 
@@ -206,7 +206,7 @@ guesses a device address or scans and removes matching files.
   state.
 - Setup never powers the adapter, guesses among adapters/devices, accepts an
   unconfirmed identity, or uses generic connection attempts.
-- `complete` is impossible before ANCS readiness, cleanup, requested audio
-  suppression, and atomic configuration persistence all succeed.
+- `complete` is impossible before ANCS readiness, cleanup, audio suppression,
+  and atomic configuration persistence all succeed.
 - Teardown retaining the bond and teardown forgetting the bond both remove
   only bridge-owned state and can be rerun safely.

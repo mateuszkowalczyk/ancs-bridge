@@ -24,7 +24,6 @@ struct AcceptanceSnapshot {
     config_digest: u64,
     bonds: Vec<String>,
     adapter_powered: bool,
-    suppress_phone_audio: bool,
     audio_rule_bytes: Option<Vec<u8>>,
     audio_role_rule_bytes: Option<Vec<u8>>,
     wireplumber_healthy: bool,
@@ -96,7 +95,6 @@ impl AcceptanceSnapshot {
             config_bytes,
             bonds,
             adapter_powered,
-            suppress_phone_audio: configuration.suppress_phone_audio,
             audio_rule_bytes,
             audio_role_rule_bytes,
             wireplumber_healthy,
@@ -136,8 +134,7 @@ impl AcceptanceSnapshot {
         if self.bonds != baseline.bonds {
             bail!("Bluetooth bond set changed during acceptance");
         }
-        if self.suppress_phone_audio != baseline.suppress_phone_audio
-            || self.audio_rule_bytes != baseline.audio_rule_bytes
+        if self.audio_rule_bytes != baseline.audio_rule_bytes
             || self.audio_role_rule_bytes != baseline.audio_role_rule_bytes
         {
             bail!("phone-audio suppression intent or rule changed during acceptance");
@@ -153,7 +150,7 @@ impl AcceptanceSnapshot {
 
     fn report(&self, label: &str) {
         eprintln!(
-            "acceptance snapshot={label} state={} stale={} pid={} nRestarts={} configDigest={:016x} bondCount={} adapterPowered={} audioSuppressed={} wireplumberHealthy={} rssKiB={} fdCount={} transitionPresent={} notificationPresent={}",
+            "acceptance snapshot={label} state={} stale={} pid={} nRestarts={} configDigest={:016x} bondCount={} adapterPowered={} audioSuppressed=true wireplumberHealthy={} rssKiB={} fdCount={} transitionPresent={} notificationPresent={}",
             self.state,
             self.stale,
             self.pid,
@@ -161,7 +158,6 @@ impl AcceptanceSnapshot {
             self.config_digest,
             self.bonds.len(),
             self.adapter_powered,
-            self.suppress_phone_audio,
             self.wireplumber_healthy,
             self.rss_kib,
             self.file_descriptors,
@@ -255,7 +251,7 @@ fn baseline_stage() -> Result<()> {
     let snapshot = wait_for_ready(READY_TIMEOUT)?;
     snapshot.assert_ready()?;
     snapshot.report("baseline");
-    let doctor = command_output(BINARY, &["doctor", "--json"])?;
+    let doctor = command_output(BINARY, &["doctor"])?;
     let value: Value = serde_json::from_slice(&doctor.stdout).context("parsing doctor output")?;
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         bail!("doctor did not report a passing baseline");
@@ -470,11 +466,11 @@ fn privacy_stage() -> Result<()> {
         ("configuration".to_owned(), fs::read(store.path())?),
         (
             "status-command".to_owned(),
-            command_output(BINARY, &["status", "--json"])?.stdout,
+            command_output(BINARY, &["status"])?.stdout,
         ),
         (
             "doctor-command".to_owned(),
-            command_output(BINARY, &["doctor", "--json"])?.stdout,
+            command_output(BINARY, &["doctor"])?.stdout,
         ),
         (
             "service-status".to_owned(),
@@ -533,8 +529,7 @@ fn final_stage() -> Result<()> {
         .load()?
         .context("ancs-bridge is not configured")?;
     let audio_rule = AudioRule::from_environment(configuration.device_address)?;
-    if !configuration.suppress_phone_audio
-        || snapshot.audio_rule_bytes.as_deref() != Some(audio_rule.content().as_bytes())
+    if snapshot.audio_rule_bytes.as_deref() != Some(audio_rule.content().as_bytes())
         || snapshot.audio_role_rule_bytes.as_deref() != Some(audio_rule.role_content().as_bytes())
     {
         bail!("phone-audio suppression intent or canonical rules are missing");
@@ -667,7 +662,7 @@ fn current_notification() -> Result<Option<String>> {
 }
 
 fn status() -> Result<Value> {
-    let output = command_output(BINARY, &["status", "--json"])?;
+    let output = command_output(BINARY, &["status"])?;
     if !output.status.success() {
         bail!("status command failed");
     }

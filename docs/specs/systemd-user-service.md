@@ -71,7 +71,7 @@ removing other bridge-owned state. An absent unit remains a successful no-op.
 ## Status, logs, and privacy
 
 Operators use `systemctl --user status`, `journalctl --user-unit`, and
-`ancs-bridge status --json` to inspect the service. Journaling contains only
+`ancs-bridge status` to inspect the service. Journaling contains only
 process diagnostics and metadata already allowed by the privacy requirements.
 Notification titles, bodies, app payloads, and secret values never appear in
 the unit, environment, journal, runtime status, or installation artifacts.
