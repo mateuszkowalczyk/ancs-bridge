@@ -40,7 +40,7 @@
 ### Immutable v0.1.0 source release
 
 - [x] Prepare a clean, committed `0.1.0` release candidate with consistent Cargo metadata, lockfile, MIT license, service documentation URL, concise README, release notes, and the complete automated validation gate passing.
-- [ ] After explicit approval, make the upstream GitHub repository public and verify anonymous access to the source, license, default branch, and security/privacy documentation without exposing local configuration, notification content, or other private artifacts.
+- [x] After explicit approval, make the upstream GitHub repository public and verify anonymous access to the source, license, default branch, and security/privacy documentation without exposing local configuration, notification content, or other private artifacts.
 - [ ] After explicit approval, create and publish the immutable annotated `v0.1.0` tag and GitHub release at the verified release-candidate commit, then record the public archive URL and SHA-256 digest without moving or replacing the tag.
 
 ### Source-built Arch package
@@ -81,3 +81,7 @@
   documented target-inactive advisory ignores, staged-install artifact checks,
   and systemd unit validation. Public archive and AUR tasks remain gated on
   the future immutable GitHub release.
+- The repository was made public by the user and verified anonymously. The
+  public default branch exposes the intended source, README, license, and
+  security/runtime documentation without local configuration or notification
+  content.
