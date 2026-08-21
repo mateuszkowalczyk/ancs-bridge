@@ -39,7 +39,7 @@
 
 ### Immutable v0.1.0 source release
 
-- [ ] Prepare a clean, committed `0.1.0` release candidate with consistent Cargo metadata, lockfile, MIT license, service documentation URL, concise README, release notes, and the complete automated validation gate passing.
+- [x] Prepare a clean, committed `0.1.0` release candidate with consistent Cargo metadata, lockfile, MIT license, service documentation URL, concise README, release notes, and the complete automated validation gate passing.
 - [ ] After explicit approval, make the upstream GitHub repository public and verify anonymous access to the source, license, default branch, and security/privacy documentation without exposing local configuration, notification content, or other private artifacts.
 - [ ] After explicit approval, create and publish the immutable annotated `v0.1.0` tag and GitHub release at the verified release-candidate commit, then record the public archive URL and SHA-256 digest without moving or replacing the tag.
 
@@ -76,3 +76,8 @@
 - With explicit user approval, the redundant `--json` flag was removed before
   release. Machine commands emit JSON unconditionally, while setup still
   streams one JSON object per line and accepts line-delimited JSON commands.
+- The committed `0.1.0` candidate passed the release build, formatting,
+  warnings-denied Clippy, all non-hardware tests, dependency audit with the
+  documented target-inactive advisory ignores, staged-install artifact checks,
+  and systemd unit validation. Public archive and AUR tasks remain gated on
+  the future immutable GitHub release.
