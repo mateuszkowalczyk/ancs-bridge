@@ -35,19 +35,19 @@
 - [x] Add one short integration section covering the stable JSON/JSONL commands and systemd user service, then retain only essential platform support, troubleshooting, development, license, and experimental-adapter caveats; remove duplicated architecture, protocol, manual-install, and exhaustive acceptance detail from the landing page.
 - [x] Make phone-audio suppression always-on for this unreleased v0.1.0: remove the setup flag and desktop config switch, require WirePlumber for configured operation, and keep package installation itself non-mutating.
 - [x] Make JSON the unconditional machine output for setup, diagnostics, status, and version without a redundant format flag, while retaining setup's line-delimited streaming protocol.
-- [ ] Verify every retained README command and claim against the packaged binary, public installation layout, machine API fixtures, and current specifications, with concise wording and working links.
+- [x] Verify every retained README command and claim against the packaged binary, public installation layout, machine API fixtures, and current specifications, with concise wording and working links.
 
 ### Immutable v0.1.0 source release
 
 - [x] Prepare a clean, committed `0.1.0` release candidate with consistent Cargo metadata, lockfile, MIT license, service documentation URL, concise README, release notes, and the complete automated validation gate passing.
 - [x] After explicit approval, make the upstream GitHub repository public and verify anonymous access to the source, license, default branch, and security/privacy documentation without exposing local configuration, notification content, or other private artifacts.
-- [ ] After explicit approval, create and publish the immutable annotated `v0.1.0` tag and GitHub release at the verified release-candidate commit, then record the public archive URL and SHA-256 digest without moving or replacing the tag.
+- [x] After explicit approval, create and publish the immutable annotated `v0.1.0` tag and GitHub release at the verified release-candidate commit, then record the public archive URL and SHA-256 digest without moving or replacing the tag.
 
 ### Source-built Arch package
 
-- [ ] Add an AUR-ready `PKGBUILD` for `ancs-bridge` 0.1.0 and generate matching `.SRCINFO`, using only the immutable public release archive and pinned checksum, `cargo` as a make dependency, verified runtime dependencies, and WirePlumber as an accurately described optional dependency.
-- [ ] Follow current Arch Rust packaging guidance: prefetch the locked target dependency graph in `prepare()`, build and test frozen/offline in later phases, and install only `/usr/bin/ancs-bridge`, the MIT license, and `ancs-bridge.service` under the systemd user-unit directory.
-- [ ] Add deterministic packaging checks that reject stale `.SRCINFO`, checksum/source drift, unexpected installed paths, install hooks, automatic service activation, user-state mutation, bundled prebuilt binaries, or a build that does not use the committed lockfile.
+- [x] Add an AUR-ready `PKGBUILD` for `ancs-bridge` 0.1.0 and generate matching `.SRCINFO`, using only the immutable public release archive and pinned checksum, `cargo` as a make dependency, verified runtime dependencies, and WirePlumber as an accurately described runtime dependency.
+- [x] Follow current Arch Rust packaging guidance: prefetch the locked target dependency graph in `prepare()`, build and test frozen/offline in later phases, and install only `/usr/bin/ancs-bridge`, the MIT license, and `ancs-bridge.service` under the systemd user-unit directory.
+- [x] Add deterministic packaging checks that reject stale `.SRCINFO`, checksum/source drift, unexpected installed paths, install hooks, automatic service activation, user-state mutation, bundled prebuilt binaries, or a build that does not use the committed lockfile.
 - [ ] Run `makepkg --cleanbuild`, `namcap` on both recipe and package, and a clean Arch chroot build; resolve every actionable error and document any narrowly justified false-positive warning.
 
 ### Package lifecycle and publication
@@ -85,3 +85,21 @@
   public default branch exposes the intended source, README, license, and
   security/runtime documentation without local configuration or notification
   content.
+- The pinned public archive checksum was verified as
+  `936d88b31a4675d11d349fd6b6a498f459a2ccb82a7b21927a47c111b8c8515a`.
+  `PKGBUILD` and `.SRCINFO` now use that archive, prefetch the locked Cargo
+  graph, build/test frozen and offline, install only the three intended paths,
+  and disable debug subpackage generation. The recipe was built successfully
+  in an isolated AUR-style checkout with dependency checks bypassed because
+  this host lacks Arch's packaged `cargo`; the recipe still declares `cargo`
+  as a make dependency.
+- The immutable GitHub release is published at
+  `https://github.com/mateuszkowalczyk/ancs-bridge/releases/tag/v0.1.0`; its
+  archive URL is
+  `https://github.com/mateuszkowalczyk/ancs-bridge/archive/refs/tags/v0.1.0.tar.gz`.
+- `namcap` is not installed locally, and a privileged clean Arch chroot build
+  remains an operator-gated check.
+- The AUR RPC currently reports no existing `ancs-bridge` package. The AUR SSH
+  endpoint could not yet be verified because this host has no accepted
+  `aur.archlinux.org` host key; configure and verify SSH before the initial
+  AUR repository step.
