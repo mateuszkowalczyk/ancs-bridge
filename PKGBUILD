@@ -1,3 +1,4 @@
+# Maintainer: Mateusz Kowalczyk
 pkgname=ancs-bridge
 pkgver=0.1.0
 pkgrel=1
