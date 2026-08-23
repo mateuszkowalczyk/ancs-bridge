@@ -15,9 +15,9 @@
   AUR publication requires a publicly downloadable immutable source archive.
 - The `ancs-bridge` AUR package name was available when this iteration was
   planned; recheck it immediately before publication.
-- `makepkg` and Arch `devtools` are installed locally, but `namcap` is not.
-  Installing missing host tooling and any privileged package operation require
-  an explicit operator step.
+- `makepkg`, Arch `devtools`, and `namcap` are available locally. Installing
+  missing host tooling and any privileged package operation require an
+  explicit operator step.
 - Request separate just-in-time user approval before making the GitHub
   repository public, publishing the `v0.1.0` tag/release, or pushing the initial
   AUR repository. Never rewrite a published release tag or AUR history.
@@ -48,7 +48,7 @@
 - [x] Add an AUR-ready `PKGBUILD` for `ancs-bridge` 0.1.0 and generate matching `.SRCINFO`, using only the immutable public release archive and pinned checksum, `cargo` as a make dependency, verified runtime dependencies, and WirePlumber as an accurately described runtime dependency.
 - [x] Follow current Arch Rust packaging guidance: prefetch the locked target dependency graph in `prepare()`, build and test frozen/offline in later phases, and install only `/usr/bin/ancs-bridge`, the MIT license, and `ancs-bridge.service` under the systemd user-unit directory.
 - [x] Add deterministic packaging checks that reject stale `.SRCINFO`, checksum/source drift, unexpected installed paths, install hooks, automatic service activation, user-state mutation, bundled prebuilt binaries, or a build that does not use the committed lockfile.
-- [ ] Run `makepkg --cleanbuild`, `namcap` on both recipe and package, and a clean Arch chroot build; resolve every actionable error and document any narrowly justified false-positive warning.
+- [x] Run `makepkg --cleanbuild`, `namcap` on both recipe and package, and a clean Arch chroot build; resolve every actionable error and document any narrowly justified false-positive warning.
 
 ### Package lifecycle and publication
 
@@ -97,9 +97,14 @@
   `https://github.com/mateuszkowalczyk/ancs-bridge/releases/tag/v0.1.0`; its
   archive URL is
   `https://github.com/mateuszkowalczyk/ancs-bridge/archive/refs/tags/v0.1.0.tar.gz`.
-- `namcap` is not installed locally, and a privileged clean Arch chroot build
-  remains an operator-gated check.
+- `namcap` and the clean Arch chroot build were run by the user as explicit
+  operator steps.
 - The AUR RPC currently reports no existing `ancs-bridge` package. The AUR SSH
   endpoint could not yet be verified because this host has no accepted
   `aur.archlinux.org` host key; configure and verify SSH before the initial
   AUR repository step.
+- The clean Arch chroot build and both `namcap` checks completed. Namcap's
+  loader, implicit `glibc`/`libgcc`, and `bluez`/`wireplumber` messages are
+  documented false positives or intentional behavior dependencies. The final
+  `checkpkg` lookup was skipped because this new package is not in an official
+  repository; the package itself was built successfully.

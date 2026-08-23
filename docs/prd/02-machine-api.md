@@ -1,6 +1,11 @@
 # Specification: `ancs-bridge` Machine API v1
 
-This is the canonical contract consumed by external frontends, including `omarchy-iphone-notifications`. Breaking changes require a new machine API version. Additive fields may be introduced within version 1 and consumers must ignore unknown fields.
+This is the canonical contract consumed by external frontends, including
+`omarchy-iphone-notifications`. During the `0.x` pre-release series, the
+version-1 contract may still receive intentional breaking simplifications; a
+stable release must use a new machine API version for later breaking changes.
+Additive fields may be introduced within version 1 and consumers must ignore
+unknown fields.
 
 ## CLI
 
@@ -92,7 +97,7 @@ Required daemon events include:
 
 ```json
 {"v":1,"event":"state","state":"waiting-for-iphone"}
-{"v":1,"event":"confirmation-request","requestId":"opaque-id","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":"123456"}
+{"v":1,"event":"confirmation-request","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":"123456"}
 {"v":1,"event":"complete","address":"AA:BB:CC:DD:EE:FF"}
 {"v":1,"event":"error","code":"stable-error-code","recoverable":true}
 ```
@@ -100,15 +105,17 @@ Required daemon events include:
 Required caller commands include:
 
 ```json
-{"v":1,"command":"confirm","requestId":"opaque-id","accept":true}
+{"v":1,"command":"confirm"}
+{"v":1,"command":"reject"}
 {"v":1,"command":"cancel"}
 ```
 
 Protocol requirements:
 
 - Only one confirmation request may be active.
-- Confirmation IDs are opaque and must match exactly.
 - Confirmation contains the incoming device name/address and six-digit passkey when BlueZ supplies one.
+- `confirm` approves the only active confirmation, while `reject` declines it.
+- `cancel` aborts setup outside the confirmation decision.
 - Reject, cancel, timeout, stdin closure, or process failure must not persist partial configuration.
 - `complete` is emitted only after confirmed pairing/trust, atomic
   configuration write, audio-rule application, and temporary adapter-state
@@ -121,5 +128,9 @@ Protocol requirements:
 - `version`, `doctor`, `status`, runtime status, and setup JSONL identify API version 1.
 - Consumers ignore unknown additive object fields.
 - Consumers must reject unsupported API versions and malformed required fields before invoking state-changing commands.
-- Semantic package versions may advance without an API change; a breaking machine-interface change requires API version 2.
-- Command names, required fields, status-state meanings, and JSONL command/event semantics are stable for API version 1.
+- Semantic package versions may advance without an API change during the
+  pre-release series; after the first stable release, a breaking
+  machine-interface change requires a new API version.
+- Command names, required fields, status-state meanings, and JSONL
+  command/event semantics are stable for a given pre-release iteration. After
+  the first stable release, breaking changes require a new machine API version.

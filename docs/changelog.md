@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-23 — Iteration 009
+
+Iteration: `docs/tasks/archived/iteration-009-v0.2-setup-confirmation.md`
+
+- Simplified the setup confirmation protocol to short `confirm`, `reject`, and
+  `cancel` JSON commands without request IDs or boolean decision fields.
+- Kept explicit phone/passkey approval, fail-closed validation, cleanup, and
+  JSONL machine output while making manual setup easier to follow.
+
 ## 2026-08-21 — Iteration 007
 
 Iteration: `docs/tasks/archived/iteration-007-field-validation-and-code-audit.md`

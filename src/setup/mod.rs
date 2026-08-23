@@ -59,7 +59,6 @@ pub trait SetupBackend: Send {
 pub struct SetupProtocol<B, C> {
     backend: B,
     clock: C,
-    request_sequence: u64,
 }
 
 #[async_trait]
@@ -152,11 +151,7 @@ where
     C: Clock,
 {
     pub fn new(backend: B, clock: C) -> Self {
-        Self {
-            backend,
-            clock,
-            request_sequence: 0,
-        }
+        Self { backend, clock }
     }
 
     pub async fn run<R, W>(&mut self, reader: &mut R, writer: &mut W, options: SetupOptions) -> bool
@@ -174,7 +169,7 @@ where
         let preparation = tokio::select! {
             biased;
             command = read_command(reader) => {
-                let failure = command_failure(command, None);
+                let failure = command_failure(command, false);
                 return self.fail_with_cleanup(writer, failure).await;
             }
             () = shutdown_signal() => {
@@ -205,7 +200,7 @@ where
                         return self.fail_with_cleanup(writer, SetupFailure::CandidateTimeout).await;
                     }
                     command = read_command(reader) => {
-                        let failure = command_failure(command, None);
+                        let failure = command_failure(command, false);
                         return self.fail_with_cleanup(writer, failure).await;
                     }
                     () = shutdown_signal() => {
@@ -215,12 +210,9 @@ where
             }
         };
 
-        self.request_sequence += 1;
-        let request_id = format!("setup-{}", self.request_sequence);
         let confirmation = SetupEvent::ConfirmationRequest {
             v: API_VERSION,
             kind: candidate.kind,
-            request_id: request_id.clone(),
             device_name: candidate.device_name.clone(),
             address: candidate.address.clone(),
             passkey: candidate.passkey.clone(),
@@ -229,14 +221,15 @@ where
             let _ = self.backend.cleanup_temporary().await;
             return false;
         }
-        let accepted = tokio::select! {
+        let decision = tokio::select! {
             command = read_command(reader) => match command {
                 Ok(command) => {
-                    if let Err(error) = validate_command(&command, Some(&request_id)) {
+                    if let Err(error) = validate_command(&command, true) {
                         return self.fail_with_cleanup(writer, protocol_failure(error)).await;
                     }
                     match command {
-                        SetupCommand::Confirm { accept, .. } => accept,
+                        SetupCommand::Confirm => true,
+                        SetupCommand::Reject => false,
                         SetupCommand::Cancel => return self.fail_with_cleanup(writer, SetupFailure::Cancelled).await,
                     }
                 }
@@ -249,7 +242,7 @@ where
                 return self.fail_with_cleanup(writer, SetupFailure::Cancelled).await;
             }
         };
-        if !accepted {
+        if !decision {
             let _ = self.backend.answer_confirmation(&candidate, false).await;
             return self.fail_with_cleanup(writer, SetupFailure::Rejected).await;
         }
@@ -277,7 +270,7 @@ where
                 return self.fail_with_cleanup(writer, SetupFailure::AncsTimeout).await;
             }
             command = read_command(reader) => {
-                let failure = command_failure(command, None);
+                let failure = command_failure(command, false);
                 return self.fail_with_cleanup(writer, failure).await;
             }
             () = shutdown_signal() => {
@@ -299,7 +292,7 @@ where
         tokio::select! {
             biased;
             command = read_command(reader) => {
-                return self.fail(writer, command_failure(command, None)).await;
+                return self.fail(writer, command_failure(command, false)).await;
             }
             () = shutdown_signal() => {
                 return self.fail(writer, SetupFailure::Cancelled).await;
@@ -371,12 +364,12 @@ where
 
 fn command_failure(
     command: Result<SetupCommand, SetupFailure>,
-    active_confirmation: Option<&str>,
+    confirmation_active: bool,
 ) -> SetupFailure {
     match command {
         Err(failure) => failure,
         Ok(SetupCommand::Cancel) => SetupFailure::Cancelled,
-        Ok(command) => validate_command(&command, active_confirmation)
+        Ok(command) => validate_command(&command, confirmation_active)
             .err()
             .map(protocol_failure)
             .unwrap_or(SetupFailure::InvalidProtocol),
@@ -386,9 +379,7 @@ fn command_failure(
 fn protocol_failure(error: ProtocolError) -> SetupFailure {
     match error {
         ProtocolError::UnsupportedVersion => SetupFailure::UnsupportedApiVersion,
-        ProtocolError::Malformed
-        | ProtocolError::WrongState
-        | ProtocolError::ConfirmationMismatch => SetupFailure::InvalidProtocol,
+        ProtocolError::Malformed | ProtocolError::WrongState => SetupFailure::InvalidProtocol,
     }
 }
 
@@ -563,11 +554,7 @@ mod tests {
     async fn fresh_success_cleans_before_commit_and_complete() {
         let backend = FakeBackend::fresh();
         let state = backend.state.clone();
-        let (ok, events) = run(
-            backend,
-            "{\"v\":1,\"command\":\"confirm\",\"requestId\":\"setup-1\",\"accept\":true}\n",
-        )
-        .await;
+        let (ok, events) = run(backend, "{\"v\":1,\"command\":\"confirm\"}\n").await;
         assert!(ok);
         assert_eq!(events.last().unwrap()["event"], "complete");
         assert_eq!(
@@ -589,11 +576,7 @@ mod tests {
         backend.state.lock().unwrap().preparation = Ok(Preparation::Existing(candidate(
             ConfirmationKind::ExistingBond,
         )));
-        let (ok, events) = run(
-            backend,
-            "{\"v\":1,\"command\":\"confirm\",\"requestId\":\"setup-1\",\"accept\":true}\n",
-        )
-        .await;
+        let (ok, events) = run(backend, "{\"v\":1,\"command\":\"confirm\"}\n").await;
         assert!(ok);
         assert_eq!(events[1]["kind"], "existing-bond");
         assert!(events[1]["passkey"].is_null());
@@ -602,13 +585,10 @@ mod tests {
     #[tokio::test]
     async fn rejection_cancel_mismatch_malformed_and_stdin_close_are_fatal_and_clean() {
         let cases = [
-            (
-                "{\"v\":1,\"command\":\"confirm\",\"requestId\":\"setup-1\",\"accept\":false}\n",
-                "rejected",
-            ),
+            ("{\"v\":1,\"command\":\"reject\"}\n", "rejected"),
             ("{\"v\":1,\"command\":\"cancel\"}\n", "cancelled"),
             (
-                "{\"v\":1,\"command\":\"confirm\",\"requestId\":\"wrong\",\"accept\":true}\n",
+                "{\"v\":1,\"command\":\"confirm\",\"requestId\":\"wrong\"}\n",
                 "invalid-protocol",
             ),
             ("not-json\n", "invalid-protocol"),
@@ -644,11 +624,7 @@ mod tests {
     async fn backend_failure_is_reported_after_cleanup() {
         let backend = FakeBackend::fresh();
         backend.state.lock().unwrap().verify = Err(SetupFailure::BackendFailed);
-        let (ok, events) = run(
-            backend,
-            "{\"v\":1,\"command\":\"confirm\",\"requestId\":\"setup-1\",\"accept\":true}\n",
-        )
-        .await;
+        let (ok, events) = run(backend, "{\"v\":1,\"command\":\"confirm\"}\n").await;
         assert!(!ok);
         assert_eq!(events.last().unwrap()["code"], "backend-failed");
     }
@@ -724,7 +700,7 @@ mod tests {
         let events = timeout_case(
             ancs_backend,
             "verifying-ancs",
-            Some("{\"v\":1,\"command\":\"confirm\",\"requestId\":\"setup-1\",\"accept\":true}\n"),
+            Some("{\"v\":1,\"command\":\"confirm\"}\n"),
             ANCS_TIMEOUT,
         )
         .await;
@@ -769,7 +745,7 @@ mod tests {
                 let event: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
                 if event["event"] == "confirmation-request" {
                     client_write
-                        .write_all(b"{\"v\":1,\"command\":\"confirm\",\"requestId\":\"setup-1\",\"accept\":true}\n")
+                        .write_all(b"{\"v\":1,\"command\":\"confirm\"}\n")
                         .await
                         .unwrap();
                 }

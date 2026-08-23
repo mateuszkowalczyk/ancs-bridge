@@ -48,9 +48,10 @@ the pairing window, setup must:
 
 Only one confirmation request may be active. The caller receives the incoming
 device name, identity address, and six-digit passkey when BlueZ supplies one.
-Setup accepts the request only after the caller confirms the matching opaque
-request ID. A device name or advertised local name is display information, not
-identity; the bonded BlueZ identity address is the persisted device key.
+Setup accepts the request only after the caller explicitly confirms the
+displayed candidate. A device name or advertised local name is display
+information, not identity; the bonded BlueZ identity address is the persisted
+device key.
 
 No other device is accepted while confirmation is pending. After approval,
 setup verifies that the same device is paired and bonded, marks it trusted, and
@@ -83,4 +84,3 @@ cleanup.
   registrations and restore adapter pairable/discoverable state.
 - The production daemon retains the local GATT application and appropriate
   advertisement for its full lifetime.
-

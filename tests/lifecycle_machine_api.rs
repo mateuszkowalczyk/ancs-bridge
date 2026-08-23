@@ -142,7 +142,6 @@ fn every_setup_event_and_stable_error_pair_matches_v1_fixtures() {
         events.push(SetupEvent::ConfirmationRequest {
             v: API_VERSION,
             kind,
-            request_id: "opaque-id".into(),
             device_name: "iPhone".into(),
             address: "AA:BB:CC:DD:EE:FF".into(),
             passkey,

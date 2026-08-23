@@ -24,6 +24,9 @@ confirm the phone you are pairing.
    **omarchy**, then tap **Forget This Device**. On the computer, remove the
    iPhone from the list of paired Bluetooth devices.
 
+   If either device was manually unpaired after a previous setup, run
+   `ancs-bridge setup --repair` instead of the plain setup command below.
+
 3. Start setup and leave the terminal open:
 
    ```console
@@ -36,13 +39,14 @@ confirm the phone you are pairing.
    the iPhone, not from the computer's Bluetooth settings.
 
 6. When the terminal shows a `confirmation-request`, check that its phone and
-   pairing code match your iPhone. Copy its `requestId`, replace
-   `PASTE_REQUEST_ID_HERE` below, and paste the completed line into the same
-   terminal:
+   pairing code match your iPhone. Then paste this line into the same terminal:
 
    ```json
-   {"v":1,"command":"confirm","requestId":"PASTE_REQUEST_ID_HERE","accept":true}
+   {"v":1,"command":"confirm"}
    ```
+
+   Use `{"v":1,"command":"reject"}` to decline the displayed phone, or
+   `{"v":1,"command":"cancel"}` to abort setup.
 
 7. Wait until the terminal shows `"event":"complete"`.
 

@@ -93,21 +93,23 @@ Confirmation uses the existing v1 event with one additive `kind` field and a
 nullable passkey:
 
 ```json
-{"v":1,"event":"confirmation-request","kind":"pairing","requestId":"opaque-id","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":"123456"}
-{"v":1,"event":"confirmation-request","kind":"existing-bond","requestId":"opaque-id","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":null}
+{"v":1,"event":"confirmation-request","kind":"pairing","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":"123456"}
+{"v":1,"event":"confirmation-request","kind":"existing-bond","deviceName":"iPhone","address":"AA:BB:CC:DD:EE:FF","passkey":null}
 ```
 
 Valid caller commands remain:
 
 ```json
-{"v":1,"command":"confirm","requestId":"opaque-id","accept":true}
+{"v":1,"command":"confirm"}
+{"v":1,"command":"reject"}
 {"v":1,"command":"cancel"}
 ```
 
-Only one confirmation may be active. A confirmation ID is opaque and must
-match exactly. Unknown versions, commands, fields with invalid types, commands
-sent in the wrong state, and mismatched request IDs are fatal protocol errors
-and cannot authorize a BlueZ operation.
+Only one confirmation may be active. `confirm` approves that candidate and
+`reject` declines it; both are invalid when no confirmation is active.
+`cancel` aborts setup outside the confirmation decision. Unknown versions,
+commands, fields with invalid types, and commands sent in the wrong state are
+fatal protocol errors and cannot authorize a BlueZ operation.
 
 Setup waits at most five minutes for an iPhone candidate, 30 seconds for caller
 confirmation, and 60 seconds after pairing or reuse for ANCS readiness. These

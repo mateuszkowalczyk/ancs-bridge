@@ -62,7 +62,6 @@ pub enum SetupEvent {
     ConfirmationRequest {
         v: u32,
         kind: ConfirmationKind,
-        request_id: String,
         device_name: String,
         address: String,
         passkey: Option<String>,
@@ -94,16 +93,14 @@ impl Serialize for SetupEvent {
             Self::ConfirmationRequest {
                 v,
                 kind,
-                request_id,
                 device_name,
                 address,
                 passkey,
             } => {
-                let mut object = serializer.serialize_struct("SetupEvent", 7)?;
+                let mut object = serializer.serialize_struct("SetupEvent", 6)?;
                 object.serialize_field("v", v)?;
                 object.serialize_field("event", "confirmation-request")?;
                 object.serialize_field("kind", kind)?;
-                object.serialize_field("requestId", request_id)?;
                 object.serialize_field("deviceName", device_name)?;
                 object.serialize_field("address", address)?;
                 object.serialize_field("passkey", passkey)?;
@@ -151,22 +148,18 @@ impl SetupEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SetupCommand {
-    Confirm { request_id: String, accept: bool },
+    Confirm,
+    Reject,
     Cancel,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case")]
+#[serde(deny_unknown_fields)]
 enum WireCommand {
-    Confirm {
-        v: u32,
-        #[serde(rename = "requestId")]
-        request_id: String,
-        accept: bool,
-    },
-    Cancel {
-        v: u32,
-    },
+    Confirm { v: u32 },
+    Reject { v: u32 },
+    Cancel { v: u32 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,7 +167,6 @@ pub enum ProtocolError {
     Malformed,
     UnsupportedVersion,
     WrongState,
-    ConfirmationMismatch,
 }
 
 pub fn parse_command(line: &str) -> Result<SetupCommand, ProtocolError> {
@@ -183,15 +175,17 @@ pub fn parse_command(line: &str) -> Result<SetupCommand, ProtocolError> {
     }
     let command: WireCommand = serde_json::from_str(line).map_err(|_| ProtocolError::Malformed)?;
     match command {
-        WireCommand::Confirm {
-            v,
-            request_id,
-            accept,
-        } => {
+        WireCommand::Confirm { v } => {
             if v != API_VERSION {
                 return Err(ProtocolError::UnsupportedVersion);
             }
-            Ok(SetupCommand::Confirm { request_id, accept })
+            Ok(SetupCommand::Confirm)
+        }
+        WireCommand::Reject { v } => {
+            if v != API_VERSION {
+                return Err(ProtocolError::UnsupportedVersion);
+            }
+            Ok(SetupCommand::Reject)
         }
         WireCommand::Cancel { v } => {
             if v != API_VERSION {
@@ -204,15 +198,13 @@ pub fn parse_command(line: &str) -> Result<SetupCommand, ProtocolError> {
 
 pub fn validate_command(
     command: &SetupCommand,
-    active_confirmation: Option<&str>,
+    confirmation_active: bool,
 ) -> Result<(), ProtocolError> {
     match command {
         SetupCommand::Cancel => Ok(()),
-        SetupCommand::Confirm { request_id, .. } => match active_confirmation {
-            Some(active) if active == request_id => Ok(()),
-            Some(_) => Err(ProtocolError::ConfirmationMismatch),
-            None => Err(ProtocolError::WrongState),
-        },
+        SetupCommand::Confirm | SetupCommand::Reject => confirmation_active
+            .then_some(())
+            .ok_or(ProtocolError::WrongState),
     }
 }
 
@@ -318,13 +310,21 @@ mod tests {
             Ok(SetupCommand::Cancel)
         );
         assert_eq!(
+            parse_command(r#"{"v":1,"command":"confirm"}"#),
+            Ok(SetupCommand::Confirm)
+        );
+        assert_eq!(
+            parse_command(r#"{"v":1,"command":"reject"}"#),
+            Ok(SetupCommand::Reject)
+        );
+        assert_eq!(
             parse_command(r#"{"v":2,"command":"cancel"}"#),
             Err(ProtocolError::UnsupportedVersion)
         );
         for invalid in [
             r#"{"v":1,"command":"unknown"}"#,
             r#"{"v":"1","command":"cancel"}"#,
-            r#"{"v":1,"command":"confirm","requestId":7,"accept":true}"#,
+            r#"{"v":1,"command":"confirm","requestId":"setup-1","accept":true}"#,
             "not-json",
         ] {
             assert_eq!(parse_command(invalid), Err(ProtocolError::Malformed));
@@ -339,19 +339,13 @@ mod tests {
 
     #[test]
     fn confirmation_validation_happens_before_authorization() {
-        let command = SetupCommand::Confirm {
-            request_id: "expected".into(),
-            accept: true,
-        };
+        let command = SetupCommand::Confirm;
         assert_eq!(
-            validate_command(&command, None),
+            validate_command(&command, false),
             Err(ProtocolError::WrongState)
         );
-        assert_eq!(
-            validate_command(&command, Some("other")),
-            Err(ProtocolError::ConfirmationMismatch)
-        );
-        assert_eq!(validate_command(&command, Some("expected")), Ok(()));
+        assert_eq!(validate_command(&command, true), Ok(()));
+        assert_eq!(validate_command(&SetupCommand::Reject, true), Ok(()));
     }
 
     #[test]
