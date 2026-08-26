@@ -17,7 +17,7 @@ docs/
 
 Development follows this progression:
 
-`PRD → Spec → Iteration tasks → Implementation → Archived iteration`
+`PRD → Spec → Iteration tasks → Implementation → Simplification → User validation → Approval → Archived iteration`
 
 The progression is incremental. A whole PRD does not need to be converted into specs or tasks at once.
 
@@ -102,9 +102,16 @@ Every changelog entry must reference the archived iteration that delivered it. D
 A task is complete only when:
 
 - implementation is finished
-- relevant tests and checks pass
+- relevant automated tests, linters, type checks, build checks, agent-performed validation, and other checks pass both before and after simplification
+- the implementation and directly related code have been reviewed for avoidable complexity, with safe simplifications applied
+- any meaningful simplification tradeoff has been decided by the user
+- any required user-run manual validation passes
 - acceptance criteria are satisfied
 - affected documentation is consistent
+
+Perform simplification after the agent has implemented and validated the work, but before asking the user to run manual tests or presenting the iteration for acceptance. Rerun the relevant checks after simplification even when it produces no code changes. Keep the review related to the selected implementation rather than expanding it into unrelated cleanup. Do not silently choose a simplification that trades off behaviour, scope, compatibility, performance, maintainability, or risk; present viable options with concise pros and cons and wait for the user's decision.
+
+Whenever user review or manual validation leads to implementation changes, run the relevant checks, repeat the simplification review, rerun the checks, and only then return the revised work for further user validation or acceptance. Repeat this cycle after every such change.
 
 Do not update a spec merely because implementation was completed. A spec should change only when expected behaviour must be clarified or changed, and only after explicit spec-change approval from the user. If user suggests something different from the spec at some point, ask them if you should change the spec to match that.
 
@@ -132,6 +139,7 @@ Do not silently resolve meaningful contradictions. Explain them and update the a
 Use the relevant project skill for procedural work:
 
 - `pmd-setup` — initialize the PMD folder and file structure
+- `pmd-update` — update an existing PMD installation while preserving project documentation and non-PMD instructions
 - `pmd-plan` — discuss the scope, draft any needed specs, and plan an iteration
 - `pmd-implement` — implement all or part of an iteration
 - `pmd-complete` — verify, request approval, update changelog, and archive an iteration
@@ -139,7 +147,9 @@ Use the relevant project skill for procedural work:
 After finishing a skill, suggest the appropriate next workflow step:
 
 - setup → restart the agent or start a new session, briefly describe the app requirements in `docs/prd/`, then use `pmd-plan`
+- update → restart the agent or start a new session so it reloads the updated PMD skills and instructions
 - planning → `pmd-implement`
+- implementation with behaviour not covered by or inconsistent with current specs → resolve the gap before continuing by fixing the implementation, or by discussing and drafting the needed spec addition or update and obtaining explicit spec-change approval
 - partial implementation → `pmd-implement` for another part
 - full implementation → `pmd-complete`
 - completion → `pmd-implement` for another current iteration, or `pmd-plan` when new planning is needed
