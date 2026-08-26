@@ -139,6 +139,9 @@ pub enum ControlWrite {
 #[async_trait]
 pub trait BluetoothTransport: Send {
     async fn reconcile(&mut self) -> Result<TransportObservation>;
+    fn current_device_name(&self) -> Option<String> {
+        None
+    }
     async fn subscribe(&mut self) -> Result<()>;
     async fn next_packet(&mut self) -> Result<TransportPacket>;
     async fn write_control(&mut self, value: &[u8], operation: ControlWrite) -> Result<()>;
@@ -180,6 +183,7 @@ pub struct BluerTransport {
     advertising_baseline: Option<u8>,
     characteristics: Option<Characteristics>,
     subscriptions: Option<Subscriptions>,
+    current_device_name: Option<String>,
 }
 
 impl BluerTransport {
@@ -198,6 +202,7 @@ impl BluerTransport {
             advertising_baseline: None,
             characteristics: None,
             subscriptions: None,
+            current_device_name: None,
         }
     }
 
@@ -327,6 +332,11 @@ impl BluetoothTransport for BluerTransport {
         let device = device_by_identity(adapter, self.device_address)
             .await?
             .context("configured Bluetooth identity is not present in BlueZ")?;
+        if let Ok(alias) = device.alias().await {
+            if !alias.is_empty() {
+                self.current_device_name = Some(alias);
+            }
+        }
         if !device.is_paired().await? {
             self.end_ancs_session();
             return Ok(TransportObservation::DeviceNotBonded);
@@ -348,6 +358,10 @@ impl BluetoothTransport for BluerTransport {
         } else {
             Ok(TransportObservation::Available)
         }
+    }
+
+    fn current_device_name(&self) -> Option<String> {
+        self.current_device_name.clone()
     }
 
     async fn subscribe(&mut self) -> Result<()> {
@@ -413,6 +427,7 @@ impl BluetoothTransport for BluerTransport {
         self.advertising_baseline = None;
         self.adapter = None;
         self.session = None;
+        self.current_device_name = None;
     }
 
     async fn shutdown(&mut self) {
@@ -473,6 +488,7 @@ struct FakeTransportState {
     calls: Vec<&'static str>,
     fail_subscribe: bool,
     wait_when_empty: bool,
+    device_name: Option<String>,
 }
 
 impl FakeBluetoothTransport {
@@ -517,6 +533,13 @@ impl FakeBluetoothTransport {
             .wait_when_empty = true;
     }
 
+    pub fn device_name(&self, value: impl Into<String>) {
+        self.inner
+            .lock()
+            .expect("fake transport poisoned")
+            .device_name = Some(value.into());
+    }
+
     pub fn writes(&self) -> Vec<Vec<u8>> {
         self.inner
             .lock()
@@ -547,6 +570,14 @@ impl BluetoothTransport for FakeBluetoothTransport {
             Ok(value) => Ok(value),
             Err(message) => anyhow::bail!(message),
         }
+    }
+
+    fn current_device_name(&self) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("fake transport poisoned")
+            .device_name
+            .clone()
     }
 
     async fn subscribe(&mut self) -> Result<()> {
@@ -591,11 +622,9 @@ impl BluetoothTransport for FakeBluetoothTransport {
     }
 
     fn reset_bluez_session(&mut self) {
-        self.inner
-            .lock()
-            .expect("fake transport poisoned")
-            .calls
-            .push("reset-bluez-session");
+        let mut inner = self.inner.lock().expect("fake transport poisoned");
+        inner.calls.push("reset-bluez-session");
+        inner.device_name = None;
     }
 }
 

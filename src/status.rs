@@ -152,7 +152,6 @@ impl RuntimeStatus {
         self.adapter.as_deref() == Some(configuration.adapter.as_str())
             && self.adapter_address == adapter_address
             && self.device_address.as_deref() == Some(address.as_str())
-            && self.device_name.as_deref() == Some(configuration.device_name.as_str())
     }
 }
 
@@ -255,6 +254,7 @@ pub struct PersistentStatusWriter<T = SystemTimestampSource> {
     store: StatusStore,
     timestamps: T,
     current: RuntimeStatus,
+    fallback_device_name: String,
     observed_delivered_count: u64,
 }
 
@@ -270,6 +270,7 @@ impl<T: TimestampSource> PersistentStatusWriter<T> {
         identity: StatusIdentity,
         timestamps: T,
     ) -> Self {
+        let fallback_device_name = identity.device_name.clone();
         let current = RuntimeStatus {
             api_version: MACHINE_API_VERSION,
             state: RuntimeState::WaitingForBluez,
@@ -291,6 +292,7 @@ impl<T: TimestampSource> PersistentStatusWriter<T> {
             store,
             timestamps,
             current,
+            fallback_device_name,
             observed_delivered_count: 0,
         }
     }
@@ -299,10 +301,25 @@ impl<T: TimestampSource> PersistentStatusWriter<T> {
 #[async_trait]
 pub trait StatusWriter: Send {
     async fn publish(&mut self, snapshot: StatusSnapshot) -> Result<()>;
+
+    async fn update_device_name(&mut self, _device_name: Option<String>) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl<T: TimestampSource> StatusWriter for PersistentStatusWriter<T> {
+    async fn update_device_name(&mut self, device_name: Option<String>) -> Result<()> {
+        let device_name = device_name
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.fallback_device_name.clone());
+        if self.current.device_name.as_deref() == Some(device_name.as_str()) {
+            return Ok(());
+        }
+        self.current.device_name = Some(device_name);
+        self.store.write(&self.current)
+    }
+
     async fn publish(&mut self, snapshot: StatusSnapshot) -> Result<()> {
         let reason = snapshot.reason_code.map(str::to_owned);
         let transition = self.current.last_transition_at.is_none()
@@ -353,12 +370,20 @@ impl StatusWriter for TracingStatusWriter {
 #[derive(Clone, Default)]
 pub struct FakeStatusWriter {
     values: Arc<Mutex<Vec<StatusSnapshot>>>,
+    device_names: Arc<Mutex<Vec<Option<String>>>>,
     fail_next: Arc<Mutex<bool>>,
 }
 
 impl FakeStatusWriter {
     pub fn values(&self) -> Vec<StatusSnapshot> {
         self.values.lock().expect("fake status poisoned").clone()
+    }
+
+    pub fn device_names(&self) -> Vec<Option<String>> {
+        self.device_names
+            .lock()
+            .expect("fake status poisoned")
+            .clone()
     }
 
     pub fn fail_next(&self) {
@@ -368,6 +393,14 @@ impl FakeStatusWriter {
 
 #[async_trait]
 impl StatusWriter for FakeStatusWriter {
+    async fn update_device_name(&mut self, device_name: Option<String>) -> Result<()> {
+        self.device_names
+            .lock()
+            .expect("fake status poisoned")
+            .push(device_name);
+        Ok(())
+    }
+
     async fn publish(&mut self, snapshot: StatusSnapshot) -> Result<()> {
         if std::mem::take(&mut *self.fail_next.lock().expect("fake status poisoned")) {
             bail!("injected status publication failure");
@@ -501,6 +534,10 @@ mod tests {
             StatusIdentity::from(&configuration()),
             timestamps,
         );
+        writer
+            .update_device_name(Some("iPhone (Mateusz)".into()))
+            .await
+            .unwrap();
         let waiting = StatusSnapshot::new(RuntimeState::WaitingForPhone);
         writer.publish(waiting.clone()).await.unwrap();
         writer.publish(waiting.clone()).await.unwrap();
@@ -513,7 +550,7 @@ mod tests {
         assert_eq!(status.adapter.as_deref(), Some("hci0"));
         assert_eq!(status.adapter_address.as_deref(), Some("11:22:33:44:55:66"));
         assert_eq!(status.device_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
-        assert_eq!(status.device_name.as_deref(), Some("iPhone"));
+        assert_eq!(status.device_name.as_deref(), Some("iPhone (Mateusz)"));
         assert_eq!(
             status.last_transition_at.as_deref(),
             Some("2026-08-19T10:00:00Z")
@@ -548,6 +585,7 @@ mod tests {
             0o600
         );
         let retained = store.read().unwrap().unwrap();
+        assert_eq!(retained.device_name.as_deref(), Some("iPhone (Mateusz)"));
         assert_eq!(
             retained.last_error_code.as_deref(),
             Some("desktop-delivery-recovered")
@@ -559,6 +597,12 @@ mod tests {
         assert_eq!(
             retained.last_transition_at.as_deref(),
             Some("2026-08-19T10:02:00Z")
+        );
+
+        writer.update_device_name(None).await.unwrap();
+        assert_eq!(
+            store.read().unwrap().unwrap().device_name.as_deref(),
+            Some("iPhone")
         );
     }
 
@@ -606,7 +650,7 @@ mod tests {
             adapter: Some("hci0".into()),
             adapter_address: Some("11:22:33:44:55:66".into()),
             device_address: Some("AA:BB:CC:DD:EE:FF".into()),
-            device_name: Some("iPhone".into()),
+            device_name: Some("iPhone (Mateusz)".into()),
             connected: true,
             services_resolved: true,
             ancs_available: true,
@@ -631,7 +675,7 @@ mod tests {
         let mut changed = configured.clone();
         changed.device_name = "Other phone".into();
         assert!(
-            status_output(Some(&changed), Some(&store), &FakeProcesses(true))
+            !status_output(Some(&changed), Some(&store), &FakeProcesses(true))
                 .unwrap()
                 .stale
         );

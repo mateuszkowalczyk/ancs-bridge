@@ -57,7 +57,7 @@ Write atomically to `$XDG_RUNTIME_DIR/ancs-bridge/status.json`:
   "adapter": "hci0",
   "adapterAddress": "11:22:33:44:55:66",
   "deviceAddress": "AA:BB:CC:DD:EE:FF",
-  "deviceName": "iPhone",
+  "deviceName": "iPhone (Mateusz)",
   "connected": true,
   "servicesResolved": true,
   "ancsAvailable": true,
@@ -70,6 +70,12 @@ Write atomically to `$XDG_RUNTIME_DIR/ancs-bridge/status.json`:
 ```
 
 No notification title, body, app payload, or other notification content may appear in this file.
+
+`deviceName` is the current BlueZ device alias/name for the configured phone
+when the daemon can resolve it. If BlueZ is temporarily unavailable, or the
+daemon is not running, status uses the configured device name as a fallback.
+This display value is not part of stale-snapshot identity matching; the stable
+device address remains the identity key.
 
 Valid states:
 

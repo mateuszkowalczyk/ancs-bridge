@@ -101,6 +101,16 @@ The daemon does not force Bluetooth power or use generic Bluetooth connection
 attempts for routine recovery. If setup is interrupted by a crash or power
 loss, check the adapter’s `Pairable` and `Discoverable` values before retrying.
 
+If the iPhone is paired and connected but status remains `waiting-for-services`
+or reports `ancs-unavailable`, turn Bluetooth off and on again in the iPhone’s
+**Settings → Bluetooth**, wait for it to reconnect, and then run:
+
+```console
+ancs-bridge status
+```
+
+Do not unpair unless setup explicitly requires repair.
+
 The validated target is Arch Linux with BlueZ and a desktop notification D-Bus
 session. Other adapters are experimental until they pass the same acceptance
 checks.

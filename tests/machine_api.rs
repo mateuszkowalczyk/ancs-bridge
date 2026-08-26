@@ -97,7 +97,7 @@ fn fixed_status(stale: bool) -> StatusOutput {
             adapter: Some("hci0".into()),
             adapter_address: None,
             device_address: Some("AA:BB:CC:DD:EE:FF".into()),
-            device_name: Some("iPhone".into()),
+            device_name: Some("iPhone (Mateusz)".into()),
             connected: true,
             services_resolved: true,
             ancs_available: true,

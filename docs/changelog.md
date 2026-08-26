@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-08-26 — Iteration 010
+
+Iteration: `docs/tasks/archived/iteration-010-live-device-name-status.md`
+
+- Reports the phone’s current BlueZ device name in machine-readable status,
+  with a configured-name fallback when the live value is unavailable.
+- Keeps stale-status detection based on stable adapter and device identity,
+  while documenting and testing the updated status contract.
+
 ## 2026-08-23 — Iteration 009
 
 Iteration: `docs/tasks/archived/iteration-009-v0.2-setup-confirmation.md`

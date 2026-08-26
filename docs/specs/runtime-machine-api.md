@@ -45,8 +45,9 @@ The daemon writes the version 1 status object defined in
 The status object contains only:
 
 - API version, current state, and stable reason/error codes
-- last-known configured adapter and device display metadata, plus the optional
-  stable controller identity address used for configuration freshness
+- last-known configured adapter metadata and the current BlueZ device alias/name
+  (falling back to the configured device name when unavailable), plus the
+  optional stable controller identity address used for configuration freshness
 - connection, service, ANCS, and subscription booleans
 - last-transition and last-notification timestamps
 - daemon process ID
@@ -84,9 +85,15 @@ The command applies these rules:
 - With no configuration, the command synthesizes `state: "unconfigured"`,
   null adapter/device/timestamp/PID fields, false runtime booleans, and
   `stale: false`.
+
 - With valid configuration but no status file, the command synthesizes
   `state: "error"`, `reasonCode: "daemon-not-running"`, the configured device
   metadata, null timestamps/PID, false runtime booleans, and `stale: true`.
+
+The `deviceName` field is refreshed from the configured BlueZ device's current
+`Alias` property (which falls back to its remote name). A changed display name
+does not make a snapshot stale; stale matching uses the configured adapter and
+device identity fields.
 
 A malformed configuration, malformed status document, unsupported schema/API
 version, or unexpected filesystem failure produces no stdout, writes a concise

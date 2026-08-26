@@ -112,6 +112,20 @@ where
         self.snapshot.ancs_available = false;
     }
 
+    async fn update_device_name(&mut self) {
+        if let Err(error) = self
+            .status_writer
+            .update_device_name(self.transport.current_device_name())
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                error_code = "status-publish-failed",
+                "runtime device name update failed"
+            );
+        }
+    }
+
     /// Reconcile one full layer of BlueZ state. Errors transition to backoff;
     /// callers choose when to sleep so tests remain deterministic.
     pub async fn reconcile_once(&mut self) -> Result<()> {
@@ -125,6 +139,7 @@ where
                 );
                 self.end_session().await;
                 self.transport.reset_bluez_session();
+                self.update_device_name().await;
                 self.snapshot.record_error("bluez-unavailable");
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
@@ -133,6 +148,7 @@ where
                 return Ok(());
             }
         };
+        self.update_device_name().await;
 
         match observation {
             TransportObservation::AdapterPoweredOff => {
@@ -387,6 +403,22 @@ mod tests {
             .position(|call| *call == "subscribe-notification-source")
             .unwrap();
         assert!(data < source);
+    }
+
+    #[tokio::test]
+    async fn forwards_current_bluez_device_name_to_status_writer() {
+        let probe = FakeBluetoothTransport::default();
+        probe.device_name("iPhone (Mateusz)");
+        probe.observation(TransportObservation::WaitingForPhone);
+        let status = FakeStatusWriter::default();
+        let mut supervisor = supervisor(probe, FakeClock::default(), status.clone());
+
+        supervisor.reconcile_once().await.unwrap();
+
+        assert_eq!(
+            status.device_names(),
+            vec![Some("iPhone (Mateusz)".to_owned())]
+        );
     }
 
     #[tokio::test]
