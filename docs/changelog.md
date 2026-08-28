@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-08-28 — Iteration 011
+
+Iteration: `docs/tasks/archived/iteration-011-fresh-start-ancs-recovery.md`
+
+- Fixed fresh-daemon and repeated-subscription ANCS recovery with bounded
+  passive BlueZ session refresh and metadata-only diagnostics.
+- Added bounded cleanup for ANCS subscriptions and temporary setup/runtime
+  registrations so service restarts cannot inherit stale Bluetooth state.
+- Validated existing-bond setup, immediate service handoff, twenty service
+  restarts, and one post-run notification without iPhone Bluetooth toggles or
+  repeated Settings intervention.
+
 ## 2026-08-26 — Iteration 010
 
 Iteration: `docs/tasks/archived/iteration-010-live-device-name-status.md`

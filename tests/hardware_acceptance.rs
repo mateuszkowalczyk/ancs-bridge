@@ -17,6 +17,7 @@ const BINARY: &str = env!("CARGO_BIN_EXE_ancs-bridge");
 const SERVICE: &str = "ancs-bridge.service";
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(45);
+const SERVICE_RESTART_CYCLES: usize = 20;
 
 #[derive(Clone, Debug)]
 struct AcceptanceSnapshot {
@@ -307,12 +308,26 @@ fn lifecycle_stage() -> Result<()> {
 
 fn service_restart_stage() -> Result<()> {
     let baseline = wait_for_ready(READY_TIMEOUT)?;
-    checked_status("systemctl", &["--user", "restart", SERVICE])?;
-    let recovered = wait_for_ready(READY_TIMEOUT)?;
-    if recovered.pid == baseline.pid {
-        bail!("service restart did not produce a new daemon PID");
+    prompt(
+        "This stage will restart ancs-bridge twenty times. Keep the iPhone nearby, but do not toggle Bluetooth or open its Bluetooth Settings; press Enter to continue.",
+    )?;
+    let mut previous_pid = baseline.pid;
+    let mut recovered = baseline.clone();
+    for cycle in 1..=SERVICE_RESTART_CYCLES {
+        let started = Instant::now();
+        checked_status("systemctl", &["--user", "restart", SERVICE])?;
+        recovered = wait_for_ready(READY_TIMEOUT)?;
+        if recovered.pid == previous_pid {
+            bail!("service restart cycle {cycle} did not produce a new daemon PID");
+        }
+        recovered.assert_invariants(&baseline)?;
+        recovered.report(&format!("service-restart-{cycle}"));
+        eprintln!(
+            "acceptance stage=service-restart cycle={cycle} ready=true elapsedMs={} pidChanged=true genericConnect=false intervention=false result=pass payloadLogged=false",
+            started.elapsed().as_millis()
+        );
+        previous_pid = recovered.pid;
     }
-    recovered.assert_invariants(&baseline)?;
     recovery_canary("service-restart", &baseline, &recovered)
 }
 

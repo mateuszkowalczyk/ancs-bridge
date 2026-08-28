@@ -16,6 +16,8 @@ const BACKOFF: [Duration; 5] = [
     Duration::from_secs(10),
     Duration::from_secs(30),
 ];
+const PASSIVE_REFRESH_RECONCILES: [u8; 2] = [3, 6];
+const SUBSCRIPTION_FAILURES_BEFORE_REFRESH: u8 = 2;
 
 pub struct Supervisor<T, N, C, S> {
     transport: T,
@@ -26,6 +28,9 @@ pub struct Supervisor<T, N, C, S> {
     observed_session_error_count: u64,
     backoff_index: usize,
     session_active: bool,
+    waiting_for_phone_reconciles: u8,
+    passive_refresh_index: usize,
+    subscription_failures: u8,
 }
 
 impl<T, N, C, S> Supervisor<T, N, C, S>
@@ -45,6 +50,9 @@ where
             observed_session_error_count: 0,
             backoff_index: 0,
             session_active: false,
+            waiting_for_phone_reconciles: 0,
+            passive_refresh_index: 0,
+            subscription_failures: 0,
         }
     }
 
@@ -104,12 +112,41 @@ where
     async fn end_session(&mut self) {
         if self.session_active {
             self.session.end().await;
-            self.transport.end_ancs_session();
             self.session_active = false;
         }
+        self.transport.end_ancs_session().await;
         self.sync_session_metadata();
         self.snapshot.subscribed = false;
         self.snapshot.ancs_available = false;
+    }
+
+    fn reset_recovery_tracking(&mut self) {
+        self.waiting_for_phone_reconciles = 0;
+        self.passive_refresh_index = 0;
+        self.subscription_failures = 0;
+    }
+
+    fn waiting_for_phone_needs_refresh(&mut self) -> bool {
+        self.waiting_for_phone_reconciles = self.waiting_for_phone_reconciles.saturating_add(1);
+        let threshold = PASSIVE_REFRESH_RECONCILES[self
+            .passive_refresh_index
+            .min(PASSIVE_REFRESH_RECONCILES.len() - 1)];
+        self.waiting_for_phone_reconciles >= threshold
+    }
+
+    async fn refresh_bluez_session(&mut self, cause: &'static str) {
+        let attempt = self.passive_refresh_index + 1;
+        tracing::info!(
+            event_code = "bluez-session-refresh",
+            recovery_cause = cause,
+            refresh_attempt = attempt,
+            "recreating BlueZ session and registrations for passive recovery"
+        );
+        self.transport.reset_bluez_session().await;
+        self.waiting_for_phone_reconciles = 0;
+        self.subscription_failures = 0;
+        self.passive_refresh_index =
+            (self.passive_refresh_index + 1).min(PASSIVE_REFRESH_RECONCILES.len() - 1);
     }
 
     async fn update_device_name(&mut self) {
@@ -138,7 +175,8 @@ where
                     "BlueZ reconciliation failed"
                 );
                 self.end_session().await;
-                self.transport.reset_bluez_session();
+                self.transport.reset_bluez_session().await;
+                self.reset_recovery_tracking();
                 self.update_device_name().await;
                 self.snapshot.record_error("bluez-unavailable");
                 self.snapshot.connected = false;
@@ -153,6 +191,7 @@ where
         match observation {
             TransportObservation::AdapterPoweredOff => {
                 self.end_session().await;
+                self.waiting_for_phone_reconciles = 0;
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::WaitingForAdapter, Some("adapter-powered-off"))
@@ -160,12 +199,14 @@ where
             }
             TransportObservation::Advertising => {
                 self.end_session().await;
+                self.waiting_for_phone_reconciles = 0;
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::Advertising, None).await;
             }
             TransportObservation::DeviceNotBonded => {
                 self.end_session().await;
+                self.waiting_for_phone_reconciles = 0;
                 self.snapshot.record_error("configured-device-not-bonded");
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
@@ -176,11 +217,9 @@ where
                 let had_active_session = self.session_active;
                 self.end_session().await;
                 if had_active_session {
-                    tracing::info!(
-                        event_code = "phone-disconnected",
-                        "recreating BlueZ registrations after active phone disconnect"
-                    );
-                    self.transport.reset_bluez_session();
+                    self.refresh_bluez_session("phone-disconnected").await;
+                } else if self.waiting_for_phone_needs_refresh() {
+                    self.refresh_bluez_session("startup-stall").await;
                 }
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
@@ -188,18 +227,21 @@ where
             }
             TransportObservation::WaitingForServices => {
                 self.end_session().await;
+                self.waiting_for_phone_reconciles = 0;
                 self.snapshot.connected = true;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::WaitingForServices, None).await;
             }
             TransportObservation::WaitingForAuthorization => {
                 self.end_session().await;
+                self.waiting_for_phone_reconciles = 0;
                 self.snapshot.connected = true;
                 self.snapshot.services_resolved = true;
                 self.publish(RuntimeState::WaitingForAuthorization, None)
                     .await;
             }
             TransportObservation::Available => {
+                self.waiting_for_phone_reconciles = 0;
                 self.snapshot.connected = true;
                 self.snapshot.services_resolved = true;
                 self.snapshot.ancs_available = true;
@@ -209,11 +251,22 @@ where
                         self.session_active = true;
                         self.snapshot.subscribed = true;
                         self.backoff_index = 0;
+                        self.reset_recovery_tracking();
                         self.publish(RuntimeState::Ready, None).await;
                     }
-                    Err(_) => {
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %format_args!("{:#}", error.error()),
+                            error_code = "subscribe-failed",
+                            subscription_stage = error.stage(),
+                            "ANCS subscription failed"
+                        );
                         self.end_session().await;
                         self.snapshot.record_error("subscribe-failed");
+                        self.subscription_failures = self.subscription_failures.saturating_add(1);
+                        if self.subscription_failures >= SUBSCRIPTION_FAILURES_BEFORE_REFRESH {
+                            self.refresh_bluez_session("subscription-failure").await;
+                        }
                         self.publish(
                             RuntimeState::WaitingForAuthorization,
                             Some("subscribe-failed"),
@@ -229,6 +282,7 @@ where
                 self.snapshot.ancs_available = true;
                 self.snapshot.subscribed = true;
                 self.backoff_index = 0;
+                self.reset_recovery_tracking();
                 self.publish(RuntimeState::Ready, None).await;
             }
         }
@@ -403,6 +457,7 @@ mod tests {
             .position(|call| *call == "subscribe-notification-source")
             .unwrap();
         assert!(data < source);
+        assert!(!calls.contains(&"reset-bluez-session"));
     }
 
     #[tokio::test]
@@ -461,6 +516,137 @@ mod tests {
                 .count(),
             1
         );
+        assert!(!calls.contains(&"connect-device"));
+    }
+
+    #[tokio::test]
+    async fn fresh_start_waiting_for_phone_refreshes_registrations_after_bounded_stall() {
+        let probe = FakeBluetoothTransport::default();
+        for observation in [
+            TransportObservation::WaitingForPhone,
+            TransportObservation::WaitingForPhone,
+            TransportObservation::WaitingForPhone,
+            TransportObservation::Available,
+        ] {
+            probe.observation(observation);
+        }
+        let mut supervisor = supervisor(
+            probe.clone(),
+            FakeClock::default(),
+            FakeStatusWriter::default(),
+        );
+
+        for _ in 0..4 {
+            supervisor.reconcile_once().await.unwrap();
+        }
+
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
+        assert_eq!(
+            probe
+                .calls()
+                .iter()
+                .filter(|call| **call == "reset-bluez-session")
+                .count(),
+            1
+        );
+        assert!(!probe.calls().contains(&"connect-device"));
+    }
+
+    #[tokio::test]
+    async fn short_startup_wait_does_not_churn_registrations() {
+        let probe = FakeBluetoothTransport::default();
+        for observation in [
+            TransportObservation::WaitingForPhone,
+            TransportObservation::WaitingForPhone,
+            TransportObservation::Available,
+        ] {
+            probe.observation(observation);
+        }
+        let mut supervisor = supervisor(
+            probe.clone(),
+            FakeClock::default(),
+            FakeStatusWriter::default(),
+        );
+
+        for _ in 0..3 {
+            supervisor.reconcile_once().await.unwrap();
+        }
+
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
+        assert!(!probe.calls().contains(&"reset-bluez-session"));
+    }
+
+    #[tokio::test]
+    async fn stalled_refresh_backs_off_and_ready_resets_the_sequence() {
+        let probe = FakeBluetoothTransport::default();
+        for _ in 0..3 {
+            probe.observation(TransportObservation::WaitingForPhone);
+        }
+        for _ in 0..6 {
+            probe.observation(TransportObservation::WaitingForPhone);
+        }
+        probe.observation(TransportObservation::Available);
+        for _ in 0..3 {
+            probe.observation(TransportObservation::WaitingForPhone);
+        }
+        let mut supervisor = supervisor(
+            probe.clone(),
+            FakeClock::default(),
+            FakeStatusWriter::default(),
+        );
+
+        for _ in 0..13 {
+            supervisor.reconcile_once().await.unwrap();
+        }
+
+        assert_eq!(
+            probe
+                .calls()
+                .iter()
+                .filter(|call| **call == "reset-bluez-session")
+                .count(),
+            3
+        );
+        assert!(!probe.calls().contains(&"connect-device"));
+    }
+
+    #[tokio::test]
+    async fn repeated_startup_subscription_failure_refreshes_and_recovers() {
+        let probe = FakeBluetoothTransport::default();
+        probe.fail_subscriptions(2);
+        for _ in 0..3 {
+            probe.observation(TransportObservation::Available);
+        }
+        let mut supervisor = supervisor(
+            probe.clone(),
+            FakeClock::default(),
+            FakeStatusWriter::default(),
+        );
+
+        for _ in 0..3 {
+            supervisor.reconcile_once().await.unwrap();
+        }
+
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
+        assert_eq!(
+            probe
+                .calls()
+                .iter()
+                .filter(|call| **call == "reset-bluez-session")
+                .count(),
+            1
+        );
+        assert_eq!(supervisor.current_backoff(), Duration::from_secs(1));
+        let calls = probe.calls();
+        let first_end = calls
+            .iter()
+            .position(|call| *call == "end-ancs-session")
+            .unwrap();
+        let refresh = calls
+            .iter()
+            .position(|call| *call == "reset-bluez-session")
+            .unwrap();
+        assert!(first_end < refresh);
         assert!(!calls.contains(&"connect-device"));
     }
 

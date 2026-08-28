@@ -42,6 +42,7 @@ struct SetupRegistrations {
     _application: ApplicationHandle,
     _advertisement: AdvertisementHandle,
     _agent: Option<AgentHandle>,
+    advertising_baseline: u8,
 }
 
 struct AncsSubscriptions {
@@ -118,6 +119,8 @@ pub struct BluerSetupBackend {
     snapshot: Option<AdapterSnapshot>,
     registrations: Option<SetupRegistrations>,
     subscriptions: Option<AncsSubscriptions>,
+    notification_source: Option<Characteristic>,
+    data_source: Option<Characteristic>,
     initial_bonds: HashSet<Address>,
     gate: Option<Arc<AgentGate>>,
     notices: Option<mpsc::UnboundedReceiver<AgentNotice>>,
@@ -140,6 +143,8 @@ impl BluerSetupBackend {
             snapshot: None,
             registrations: None,
             subscriptions: None,
+            notification_source: None,
+            data_source: None,
             initial_bonds: HashSet::new(),
             gate: None,
             notices: None,
@@ -246,6 +251,10 @@ impl BluerSetupBackend {
                 .await
                 .map_err(|_| SetupFailure::BackendFailed)?,
         });
+        let advertising_baseline = adapter
+            .active_advertising_instances()
+            .await
+            .map_err(|_| SetupFailure::BackendFailed)?;
         let application = adapter
             .serve_gatt_application(hid::application())
             .await
@@ -279,6 +288,7 @@ impl BluerSetupBackend {
             _application: application,
             _advertisement: advertisement,
             _agent: Some(agent),
+            advertising_baseline,
         });
         adapter
             .set_pairable(true)
@@ -298,6 +308,10 @@ impl BluerSetupBackend {
             .adapter
             .as_ref()
             .ok_or(SetupFailure::AdapterUnavailable)?;
+        let advertising_baseline = adapter
+            .active_advertising_instances()
+            .await
+            .map_err(|_| SetupFailure::BackendFailed)?;
         let application = adapter
             .serve_gatt_application(hid::application())
             .await
@@ -313,6 +327,7 @@ impl BluerSetupBackend {
             _application: application,
             _advertisement: advertisement,
             _agent: None,
+            advertising_baseline,
         });
         Ok(())
     }
@@ -488,25 +503,35 @@ impl SetupBackend for BluerSetupBackend {
                 && device.is_connected().await.unwrap_or(false)
                 && device.is_services_resolved().await.unwrap_or(false)
             {
-                if let Some((data_source, notification_source)) =
+                if let Some((data_source_characteristic, notification_source)) =
                     find_ancs_sources(&device)
                         .await
                         .map_err(|_| SetupFailure::BackendFailed)?
                 {
-                    let data_source = data_source
+                    let data_source = data_source_characteristic
                         .notify()
                         .await
                         .map_err(|_| SetupFailure::BackendFailed)?
                         .boxed();
-                    let notification_source = notification_source
-                        .notify()
-                        .await
-                        .map_err(|_| SetupFailure::BackendFailed)?
-                        .boxed();
+                    let notification_stream = match notification_source.notify().await {
+                        Ok(value) => value.boxed(),
+                        Err(_) => {
+                            let mut partial = Some(data_source);
+                            transport::quiesce_notifications(
+                                &mut partial,
+                                Some(&notification_source),
+                                Some(&data_source_characteristic),
+                            )
+                            .await;
+                            return Err(SetupFailure::BackendFailed);
+                        }
+                    };
                     self.subscriptions = Some(AncsSubscriptions {
                         _data_source: data_source,
-                        _notification_source: notification_source,
+                        _notification_source: notification_stream,
                     });
+                    self.data_source = Some(data_source_characteristic);
+                    self.notification_source = Some(notification_source);
                     let name = device
                         .name()
                         .await
@@ -522,11 +547,33 @@ impl SetupBackend for BluerSetupBackend {
     }
 
     async fn cleanup_temporary(&mut self) -> Result<(), SetupFailure> {
-        self.subscriptions = None;
-        self.registrations = None;
+        let notifications_stopped = transport::quiesce_notifications(
+            &mut self.subscriptions,
+            self.notification_source.as_ref(),
+            self.data_source.as_ref(),
+        )
+        .await;
+        self.notification_source = None;
+        self.data_source = None;
         self.gate = None;
         self.notices = None;
-        self.restore_adapter().await
+        let restored = self.restore_adapter().await;
+        let registrations_stopped = if let Some(registrations) = self.registrations.take() {
+            let baseline = registrations.advertising_baseline;
+            drop(registrations);
+            match self.adapter.as_ref() {
+                Some(adapter) => transport::wait_for_advertisement_release(adapter, baseline).await,
+                None => false,
+            }
+        } else {
+            true
+        };
+        restored?;
+        if notifications_stopped && registrations_stopped {
+            Ok(())
+        } else {
+            Err(SetupFailure::CleanupFailed)
+        }
     }
 
     async fn commit(

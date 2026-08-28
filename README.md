@@ -98,8 +98,13 @@ ancs-bridge status
 ```
 
 The daemon does not force Bluetooth power or use generic Bluetooth connection
-attempts for routine recovery. If setup is interrupted by a crash or power
-loss, check the adapter’s `Pairable` and `Discoverable` values before retrying.
+attempts for routine recovery. After setup or service restart it passively
+recreates its BlueZ session if a bounded startup stall or repeated ANCS
+subscription failure is detected. If troubleshooting is needed, inspect the
+journal for `event_code=bluez-session-refresh`, `recovery_cause`, and
+`subscription_stage`; these fields contain metadata only. If setup is
+interrupted by a crash or power loss, check the adapter’s `Pairable` and
+`Discoverable` values before retrying.
 
 If the iPhone is paired and connected but status remains `waiting-for-services`
 or reports `ancs-unavailable`, turn Bluetooth off and on again in the iPhone’s

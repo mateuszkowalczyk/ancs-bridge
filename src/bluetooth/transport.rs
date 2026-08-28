@@ -1,5 +1,5 @@
 use crate::bluetooth::hid;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use bluer::{
     adv::AdvertisementHandle,
@@ -16,6 +16,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::Notify;
+
+const CLEANUP_ATTEMPTS: usize = 40;
+const CLEANUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 pub const NOTIFICATION_SOURCE_UUID: Uuid = Uuid::from_u128(0x9fbf120d_6301_42d9_8c58_25e699a21dbd);
 pub const DATA_SOURCE_UUID: Uuid = Uuid::from_u128(0x22eac6e9_24d6_4bb5_be44_b36ace7c7bfb);
@@ -136,20 +139,78 @@ pub enum ControlWrite {
     Request,
 }
 
+#[derive(Debug)]
+pub struct SubscriptionFailure {
+    stage: &'static str,
+    error: anyhow::Error,
+}
+
+impl SubscriptionFailure {
+    fn new(stage: &'static str, error: impl Into<anyhow::Error>) -> Self {
+        Self {
+            stage,
+            error: error.into(),
+        }
+    }
+
+    pub fn stage(&self) -> &'static str {
+        self.stage
+    }
+
+    pub fn error(&self) -> &anyhow::Error {
+        &self.error
+    }
+}
+
+pub(crate) async fn quiesce_notifications<T>(
+    subscriptions: &mut Option<T>,
+    notification_source: Option<&Characteristic>,
+    data_source: Option<&Characteristic>,
+) -> bool {
+    *subscriptions = None;
+    for _ in 0..CLEANUP_ATTEMPTS {
+        let notification_stopped = characteristic_stopped(notification_source).await;
+        let data_stopped = characteristic_stopped(data_source).await;
+        if notification_stopped && data_stopped {
+            return true;
+        }
+        tokio::time::sleep(CLEANUP_POLL_INTERVAL).await;
+    }
+    false
+}
+
+async fn characteristic_stopped(characteristic: Option<&Characteristic>) -> bool {
+    let Some(characteristic) = characteristic else {
+        return true;
+    };
+    characteristic.notifying().await.ok().flatten() != Some(true)
+}
+
+pub(crate) async fn wait_for_advertisement_release(adapter: &Adapter, baseline: u8) -> bool {
+    for _ in 0..CLEANUP_ATTEMPTS {
+        match adapter.active_advertising_instances().await {
+            Ok(active) if active <= baseline => return true,
+            Err(_) => return true,
+            _ => tokio::time::sleep(CLEANUP_POLL_INTERVAL).await,
+        }
+    }
+    false
+}
+
 #[async_trait]
 pub trait BluetoothTransport: Send {
     async fn reconcile(&mut self) -> Result<TransportObservation>;
     fn current_device_name(&self) -> Option<String> {
         None
     }
-    async fn subscribe(&mut self) -> Result<()>;
+    async fn subscribe(&mut self) -> std::result::Result<(), SubscriptionFailure>;
     async fn next_packet(&mut self) -> Result<TransportPacket>;
     async fn write_control(&mut self, value: &[u8], operation: ControlWrite) -> Result<()>;
-    fn end_ancs_session(&mut self);
-    fn reset_bluez_session(&mut self);
+    async fn end_ancs_session(&mut self);
+    async fn reset_bluez_session(&mut self);
 
     async fn shutdown(&mut self) {
-        self.end_ancs_session();
+        self.end_ancs_session().await;
     }
 }
 
@@ -230,11 +291,30 @@ impl BluerTransport {
         Ok(())
     }
 
-    fn invalidate_bluez_objects(&mut self) {
-        self.end_ancs_session();
+    async fn quiesce_ancs_session(&mut self) -> bool {
+        let notification_source = self
+            .characteristics
+            .as_ref()
+            .map(|value| &value.notification_source);
+        let data_source = self
+            .characteristics
+            .as_ref()
+            .map(|value| &value.data_source);
+        let stopped =
+            quiesce_notifications(&mut self.subscriptions, notification_source, data_source).await;
+        self.characteristics = None;
+        stopped
+    }
+
+    async fn release_registrations(&mut self) -> bool {
+        let baseline = self.advertising_baseline.take();
         self.registrations = None;
-        self.advertising_baseline = None;
-        self.adapter = None;
+        match (self.adapter.as_ref(), baseline) {
+            (Some(adapter), Some(baseline)) => {
+                wait_for_advertisement_release(adapter, baseline).await
+            }
+            _ => true,
+        }
     }
 
     async fn registrations_are_live(&mut self) -> Result<bool> {
@@ -322,7 +402,7 @@ impl BluetoothTransport for BluerTransport {
                 event_code = "bluez-registrations-lost",
                 "recreating registrations missing from BlueZ"
             );
-            self.invalidate_bluez_objects();
+            self.reset_bluez_session().await;
             self.ensure_bluez().await?;
         }
         if self.ensure_registrations().await? {
@@ -338,19 +418,15 @@ impl BluetoothTransport for BluerTransport {
             }
         }
         if !device.is_paired().await? {
-            self.end_ancs_session();
             return Ok(TransportObservation::DeviceNotBonded);
         }
         if !device.is_connected().await? {
-            self.end_ancs_session();
             return Ok(TransportObservation::WaitingForPhone);
         }
         if !device.is_services_resolved().await? {
-            self.end_ancs_session();
             return Ok(TransportObservation::WaitingForServices);
         }
         if !self.discover_characteristics().await? {
-            self.end_ancs_session();
             return Ok(TransportObservation::WaitingForAuthorization);
         }
         if self.subscriptions.is_some() {
@@ -364,21 +440,43 @@ impl BluetoothTransport for BluerTransport {
         self.current_device_name.clone()
     }
 
-    async fn subscribe(&mut self) -> Result<()> {
-        let characteristics = self.characteristics.as_ref().context("ANCS unavailable")?;
+    async fn subscribe(&mut self) -> std::result::Result<(), SubscriptionFailure> {
+        let characteristics = self
+            .characteristics
+            .as_ref()
+            .ok_or_else(|| SubscriptionFailure::new("discovery", anyhow!("ANCS unavailable")))?;
         // The order is protocol-significant: Data Source must be active first.
         let data_source = characteristics
             .data_source
             .notify()
             .await
-            .context("subscribing Data Source")?
+            .map_err(|error| {
+                SubscriptionFailure::new(
+                    "data-source",
+                    anyhow!(error).context("subscribing Data Source"),
+                )
+            })?
             .boxed();
-        let notification_source = characteristics
-            .notification_source
-            .notify()
-            .await
-            .context("subscribing Notification Source")?
-            .boxed();
+        let notification_source = match characteristics.notification_source.notify().await {
+            Ok(value) => value.boxed(),
+            Err(error) => {
+                let mut partial = Some(data_source);
+                let stopped = quiesce_notifications(
+                    &mut partial,
+                    Some(&characteristics.notification_source),
+                    Some(&characteristics.data_source),
+                )
+                .await;
+                let error = if stopped {
+                    anyhow!(error).context("subscribing Notification Source")
+                } else {
+                    anyhow!(error)
+                        .context("subscribing Notification Source")
+                        .context("timed out stopping partial Data Source subscription")
+                };
+                return Err(SubscriptionFailure::new("notification-source", error));
+            }
+        };
         self.subscriptions = Some(Subscriptions {
             notification_source,
             data_source,
@@ -416,15 +514,25 @@ impl BluetoothTransport for BluerTransport {
             .context("writing ANCS Control Point with response")
     }
 
-    fn end_ancs_session(&mut self) {
-        self.subscriptions = None;
-        self.characteristics = None;
+    async fn end_ancs_session(&mut self) {
+        if !self.quiesce_ancs_session().await {
+            tracing::warn!(
+                error_code = "notify-shutdown-timeout",
+                cleanup_scope = "ancs-session",
+                "timed out waiting for ANCS notifications to stop"
+            );
+        }
     }
 
-    fn reset_bluez_session(&mut self) {
-        self.end_ancs_session();
-        self.registrations = None;
-        self.advertising_baseline = None;
+    async fn reset_bluez_session(&mut self) {
+        self.end_ancs_session().await;
+        if !self.release_registrations().await {
+            tracing::warn!(
+                error_code = "registration-shutdown-timeout",
+                cleanup_scope = "bluez-session",
+                "timed out waiting for Bluetooth advertisement to unregister"
+            );
+        }
         self.adapter = None;
         self.session = None;
         self.current_device_name = None;
@@ -435,33 +543,7 @@ impl BluetoothTransport for BluerTransport {
         // session task. Keep the session and characteristic handles alive
         // until BlueZ confirms both CCCDs are disabled so an immediate
         // systemd restart cannot inherit a stale Notifying=true session.
-        self.subscriptions = None;
-        let mut stopped = false;
-        for _ in 0..40 {
-            let Some(characteristics) = self.characteristics.as_ref() else {
-                stopped = true;
-                break;
-            };
-            let notification_source = characteristics.notification_source.notifying().await;
-            let data_source = characteristics.data_source.notifying().await;
-            if notification_source.as_ref().ok().copied().flatten() != Some(true)
-                && data_source.as_ref().ok().copied().flatten() != Some(true)
-            {
-                stopped = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-        if !stopped {
-            tracing::warn!(
-                error_code = "notify-shutdown-timeout",
-                "timed out waiting for ANCS notifications to stop"
-            );
-        }
-        self.characteristics = None;
-        self.registrations = None;
-        self.advertising_baseline = None;
-        tokio::task::yield_now().await;
+        self.reset_bluez_session().await;
     }
 }
 
@@ -486,7 +568,7 @@ struct FakeTransportState {
     packets: VecDeque<Result<TransportPacket, String>>,
     writes: Vec<Vec<u8>>,
     calls: Vec<&'static str>,
-    fail_subscribe: bool,
+    failed_subscriptions_remaining: usize,
     wait_when_empty: bool,
     device_name: Option<String>,
 }
@@ -540,6 +622,13 @@ impl FakeBluetoothTransport {
             .device_name = Some(value.into());
     }
 
+    pub fn fail_subscriptions(&self, count: usize) {
+        self.inner
+            .lock()
+            .expect("fake transport poisoned")
+            .failed_subscriptions_remaining = count;
+    }
+
     pub fn writes(&self) -> Vec<Vec<u8>> {
         self.inner
             .lock()
@@ -580,12 +669,16 @@ impl BluetoothTransport for FakeBluetoothTransport {
             .clone()
     }
 
-    async fn subscribe(&mut self) -> Result<()> {
+    async fn subscribe(&mut self) -> std::result::Result<(), SubscriptionFailure> {
         let mut inner = self.inner.lock().expect("fake transport poisoned");
         inner.calls.push("subscribe-data-source");
         inner.calls.push("subscribe-notification-source");
-        if inner.fail_subscribe {
-            anyhow::bail!("injected subscribe failure");
+        if inner.failed_subscriptions_remaining > 0 {
+            inner.failed_subscriptions_remaining -= 1;
+            return Err(SubscriptionFailure::new(
+                "notification-source",
+                anyhow!("injected subscribe failure"),
+            ));
         }
         Ok(())
     }
@@ -613,7 +706,7 @@ impl BluetoothTransport for FakeBluetoothTransport {
         Ok(())
     }
 
-    fn end_ancs_session(&mut self) {
+    async fn end_ancs_session(&mut self) {
         self.inner
             .lock()
             .expect("fake transport poisoned")
@@ -621,7 +714,7 @@ impl BluetoothTransport for FakeBluetoothTransport {
             .push("end-ancs-session");
     }
 
-    fn reset_bluez_session(&mut self) {
+    async fn reset_bluez_session(&mut self) {
         let mut inner = self.inner.lock().expect("fake transport poisoned");
         inner.calls.push("reset-bluez-session");
         inner.device_name = None;
@@ -651,6 +744,29 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         drop(owner);
         assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn shared_quiescence_drops_stream_owner_without_characteristics() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut subscription = Some(DropProbe(Arc::clone(&drops)));
+
+        assert!(quiesce_notifications(&mut subscription, None, None).await);
+
+        assert!(subscription.is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn subscription_failure_retains_stage_and_error_chain() {
+        let probe = FakeBluetoothTransport::default();
+        probe.fail_subscriptions(1);
+        let mut transport = probe;
+
+        let error = transport.subscribe().await.unwrap_err();
+
+        assert_eq!(error.stage(), "notification-source");
+        assert_eq!(format!("{:#}", error.error()), "injected subscribe failure");
     }
 
     #[test]
