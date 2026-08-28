@@ -129,6 +129,10 @@ pub enum TransportObservation {
     Ready,
 }
 
+fn configured_device<T>(device: Option<T>) -> std::result::Result<T, TransportObservation> {
+    device.ok_or(TransportObservation::DeviceNotBonded)
+}
+
 pub enum TransportPacket {
     NotificationSource(Vec<u8>),
     DataSource(Vec<u8>),
@@ -409,9 +413,11 @@ impl BluetoothTransport for BluerTransport {
             return Ok(TransportObservation::Advertising);
         }
         let adapter = self.adapter.as_ref().context("adapter unavailable")?;
-        let device = device_by_identity(adapter, self.device_address)
-            .await?
-            .context("configured Bluetooth identity is not present in BlueZ")?;
+        let device =
+            match configured_device(device_by_identity(adapter, self.device_address).await?) {
+                Ok(device) => device,
+                Err(observation) => return Ok(observation),
+            };
         if let Ok(alias) = device.alias().await {
             if !alias.is_empty() {
                 self.current_device_name = Some(alias);
@@ -744,6 +750,14 @@ mod tests {
         assert_eq!(drops.load(Ordering::SeqCst), 0);
         drop(owner);
         assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn absent_configured_device_is_classified_as_not_bonded() {
+        assert_eq!(
+            configured_device::<()>(None),
+            Err(TransportObservation::DeviceNotBonded)
+        );
     }
 
     #[tokio::test]

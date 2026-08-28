@@ -666,6 +666,24 @@ mod tests {
                 .unwrap()
                 .stale
         );
+
+        let mut not_bonded = status;
+        not_bonded.state = RuntimeState::Error;
+        not_bonded.reason_code = Some("configured-device-not-bonded".into());
+        not_bonded.last_error_code = Some("configured-device-not-bonded".into());
+        not_bonded.connected = false;
+        not_bonded.services_resolved = false;
+        not_bonded.ancs_available = false;
+        not_bonded.subscribed = false;
+        store.write(&not_bonded).unwrap();
+        let output = status_output(Some(&configured), Some(&store), &FakeProcesses(true)).unwrap();
+        assert_eq!(output.status.state, RuntimeState::Error);
+        assert_eq!(
+            output.status.reason_code.as_deref(),
+            Some("configured-device-not-bonded")
+        );
+        assert!(!output.stale);
+
         assert!(
             status_output(Some(&configured), Some(&store), &FakeProcesses(false))
                 .unwrap()

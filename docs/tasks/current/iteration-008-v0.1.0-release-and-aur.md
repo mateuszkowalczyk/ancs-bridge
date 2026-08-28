@@ -59,6 +59,7 @@
 
 ### Final release verification
 
+- [x] Correctly classify a configured Bluetooth identity that is absent from BlueZ as `configured-device-not-bonded`, publish a fresh error status, preserve BlueZ failures as `bluez-unavailable` backoff, and cover the regression with transport and status tests.
 - [ ] Confirm the public GitHub release, release archive digest, upstream packaging copies, AUR files/page, built package contents, installed version output, enabled/running service, ANCS `ready` state, notification delivery, audio policy, and privacy evidence all describe the same immutable `0.1.0` release; run formatting, warnings-denied Clippy, all non-hardware tests, dependency audit, release build, unit verification, and `git diff --check` once more.
 
 ## Implementation notes
@@ -108,3 +109,7 @@
   documented false positives or intentional behavior dependencies. The final
   `checkpkg` lookup was skipped because this new package is not in an official
   repository; the package itself was built successfully.
+- A missing configured BlueZ device now remains a transport observation instead
+  of becoming a generic BlueZ error. Automated coverage preserves unpaired-device
+  and genuine BlueZ failure handling, and a live run against the removed bond
+  published fresh `error` / `configured-device-not-bonded` status.
