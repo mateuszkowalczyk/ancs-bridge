@@ -171,13 +171,15 @@ fn aur_recipe_is_pinned_non_mutating_and_srcinfo_is_current() {
     for required in [
         "pkgname=ancs-bridge",
         "pkgver=0.1.0",
-        "pkgrel=1",
+        "pkgrel=2",
         "arch=('x86_64')",
         "license=('MIT')",
         "options=('!debug')",
         "depends=('bluez' 'dbus' 'wireplumber')",
-        "makedepends=('cargo')",
-        "sha256sums=('936d88b31a4675d11d349fd6b6a498f459a2ccb82a7b21927a47c111b8c8515a')",
+        "makedepends=('cargo' 'pkgconf')",
+        "_commit=c4544e07060245f939f0a2fc0dbe18de10be2ba4",
+        "source=(\"$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz\")",
+        "sha256sums=('df3361c020b40c9650f2f3b3d24afc7df79b95a5da5963cc1c258dfa47150183')",
         "cargo fetch --locked --target",
         "cargo build --release --locked --frozen --offline",
         "cargo test --all-targets --locked --frozen --offline",
@@ -191,7 +193,7 @@ fn aur_recipe_is_pinned_non_mutating_and_srcinfo_is_current() {
     for required in [
         "pkgbase = ancs-bridge",
         "pkgver = 0.1.0",
-        "pkgrel = 1",
+        "pkgrel = 2",
         "arch = x86_64",
         "license = MIT",
         "options = !debug",
@@ -199,7 +201,9 @@ fn aur_recipe_is_pinned_non_mutating_and_srcinfo_is_current() {
         "depends = dbus",
         "depends = wireplumber",
         "makedepends = cargo",
-        "sha256sums = 936d88b31a4675d11d349fd6b6a498f459a2ccb82a7b21927a47c111b8c8515a",
+        "makedepends = pkgconf",
+        "source = ancs-bridge-c4544e07060245f939f0a2fc0dbe18de10be2ba4.tar.gz::https://github.com/mateuszkowalczyk/ancs-bridge/archive/c4544e07060245f939f0a2fc0dbe18de10be2ba4.tar.gz",
+        "sha256sums = df3361c020b40c9650f2f3b3d24afc7df79b95a5da5963cc1c258dfa47150183",
     ] {
         assert!(srcinfo.contains(required), ".SRCINFO is missing {required}");
     }
@@ -207,6 +211,9 @@ fn aur_recipe_is_pinned_non_mutating_and_srcinfo_is_current() {
     let normalized = recipe.to_ascii_lowercase();
     for forbidden in [
         "install=",
+        "refs/heads/",
+        "refs/tags/",
+        "skip",
         "post_install",
         "post_upgrade",
         "post_remove",
