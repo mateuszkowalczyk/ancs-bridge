@@ -99,12 +99,26 @@ ancs-bridge status
 
 The daemon does not force Bluetooth power or use generic Bluetooth connection
 attempts for routine recovery. After setup or service restart it passively
-recreates its BlueZ session if a bounded startup stall or repeated ANCS
+recreates its BlueZ session if a prolonged disconnected wait or repeated ANCS
 subscription failure is detected. If troubleshooting is needed, inspect the
 journal for `event_code=bluez-session-refresh`, `recovery_cause`, and
 `subscription_stage`; these fields contain metadata only. If setup is
 interrupted by a crash or power loss, check the adapter’s `Pairable` and
 `Discoverable` values before retrying.
+
+Disconnected-phone recovery uses elapsed-time exponential backoff: 15 seconds,
+30 seconds, 1 minute, 2 minutes, 4 minutes, then 5 minutes between refreshes.
+It continues at five-minute intervals while advertising and checking state
+every five seconds, so normal incoming reconnections do not wait for a refresh.
+An active phone disconnect still triggers one immediate refresh, followed by
+the 30-second step. A successful ANCS connection or a BlueZ error resets the
+sequence. A genuinely stale advertisement can take up to five minutes to be
+refreshed, plus reconciliation and registration time. Refresh logs include
+`retry_after_secs` for the next delay.
+
+An ended or failed ANCS stream publishes `backoff` with reason
+`ancs-stream-failed` and waits five seconds before retrying. This prevents
+rapid resubscription loops while BlueZ still reports a stale connection.
 
 If the iPhone is paired and connected but status remains `waiting-for-services`
 or reports `ancs-unavailable`, turn Bluetooth off and on again in the iPhone’s
