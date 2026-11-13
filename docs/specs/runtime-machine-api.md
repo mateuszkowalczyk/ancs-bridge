@@ -27,6 +27,19 @@ Configuration replacement is atomic and the resulting file has mode `0600`.
 Failed writes do not replace the last valid configuration. Configuration never
 contains notification payload data.
 
+The optional `[notifications]` section accepts `ignore_apps`, a list of at most
+100 iOS bundle identifiers. Each entry must contain 1–255 UTF-8 bytes, must not
+contain Unicode control characters, and must not consist only of whitespace.
+Validation errors identify the entry's one-based position without echoing its
+value. Matching is exact and case-sensitive; identifiers are not normalized.
+An absent or empty list preserves existing forwarding behavior, and an empty
+section is omitted on write. Schema version remains 1.
+
+Setup repair and re-pair preserve this policy. Restart the daemon after editing
+the configuration; policy changes are not hot-reloaded. Older binaries ignore
+the section and may remove it when rewriting configuration, so downgrading
+disables this delivery filter.
+
 `ancs-bridge daemon` accepts no device-selection arguments. It loads the
 configuration, resolves the configured controller address to its current BlueZ
 `hciN` name, starts the runtime supervisor for that exact controller and bonded

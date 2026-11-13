@@ -484,6 +484,7 @@ mod tests {
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
             },
+            notifications: None,
         }
         .validate()
         .unwrap()

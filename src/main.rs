@@ -146,7 +146,8 @@ async fn daemon() -> Result<()> {
         FreedesktopSink::default(),
         TokioClock::default(),
         status_writer,
-    );
+    )
+    .with_ignored_apps(configuration.ignored_apps);
     tokio::select! {
         result = supervisor.run() => result,
         signal = daemon_shutdown_signal() => {
