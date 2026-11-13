@@ -42,6 +42,7 @@ pub struct SessionEngine<N, C> {
     app_order: VecDeque<String>,
     decoder: DataSourceDecoder,
     metadata: SessionMetadata,
+    ignored_apps: HashSet<String>,
 }
 
 impl<N, C> SessionEngine<N, C>
@@ -63,7 +64,14 @@ where
             app_order: VecDeque::new(),
             decoder: DataSourceDecoder::default(),
             metadata: SessionMetadata::default(),
+            ignored_apps: HashSet::new(),
         }
+    }
+
+    /// Configure the startup-only delivery policy using validated bundle identifiers.
+    pub fn with_ignored_apps(mut self, ignored_apps: impl IntoIterator<Item = String>) -> Self {
+        self.ignored_apps = ignored_apps.into_iter().collect();
+        self
     }
 
     pub fn metadata(&self) -> SessionMetadata {
@@ -153,6 +161,10 @@ where
                 return Ok(true);
             }
         };
+
+        if self.ignored_apps.contains(&attributes.app_identifier) {
+            return Ok(true);
+        }
 
         let app_name = match self.app_names.get(&attributes.app_identifier) {
             Some(value) => value.clone(),
@@ -387,6 +399,52 @@ mod tests {
         bytes.extend((name.len() as u16).to_le_bytes());
         bytes.extend(name.as_bytes());
         bytes
+    }
+
+    #[tokio::test]
+    async fn ignored_lifecycle_stays_filtered_after_session_end_while_exact_nonmatches_deliver() {
+        let probe = FakeBluetoothTransport::default();
+        let mut transport = probe.clone();
+        let sink = FakeNotificationSink::default();
+        let mut engine = SessionEngine::new(sink.clone(), FakeClock::default())
+            .with_ignored_apps(["com.example".to_owned()]);
+
+        for kind in [EventKind::Added, EventKind::Modified] {
+            engine.ingest(event(kind, 1)).await;
+            probe.packet(TransportPacket::DataSource(notification_response(
+                1,
+                "com.example",
+            )));
+            assert!(engine.process_next(&mut transport).await.unwrap());
+        }
+        engine.ingest(event(EventKind::Removed, 1)).await;
+        assert_eq!(probe.writes().len(), 2);
+        assert!(sink.calls().is_empty());
+        assert!(engine.handles.is_empty());
+        assert!(engine.app_names.is_empty());
+        assert_eq!(engine.metadata(), SessionMetadata::default());
+
+        engine.end().await;
+        engine.ingest(event(EventKind::Added, 1)).await;
+        probe.packet(TransportPacket::DataSource(notification_response(
+            1,
+            "com.example",
+        )));
+        engine.process_next(&mut transport).await.unwrap();
+        assert!(sink.calls().is_empty());
+        assert_eq!(probe.writes().len(), 3);
+
+        for (uid, app) in [(2, "com.Example"), (3, "com.example.other")] {
+            engine.ingest(event(EventKind::Added, uid)).await;
+            probe.packet(TransportPacket::DataSource(notification_response(uid, app)));
+            probe.packet(TransportPacket::DataSource(app_response(app, "Example")));
+            engine.process_next(&mut transport).await.unwrap();
+        }
+        assert!(matches!(
+            sink.calls().as_slice(),
+            [SinkCall::Create(_), SinkCall::Create(_)]
+        ));
+        assert_eq!(engine.metadata().delivered_count, 2);
     }
 
     #[tokio::test]

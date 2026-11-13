@@ -56,6 +56,11 @@ where
         }
     }
 
+    pub fn with_ignored_apps(mut self, ignored_apps: impl IntoIterator<Item = String>) -> Self {
+        self.session = self.session.with_ignored_apps(ignored_apps);
+        self
+    }
+
     pub fn snapshot(&self) -> &StatusSnapshot {
         &self.snapshot
     }
@@ -413,6 +418,57 @@ mod tests {
         status: FakeStatusWriter,
     ) -> Supervisor<FakeBluetoothTransport, FakeNotificationSink, FakeClock, FakeStatusWriter> {
         Supervisor::new(transport, FakeNotificationSink::default(), clock, status)
+    }
+
+    #[tokio::test]
+    async fn app_filter_survives_disconnect_and_resubscription() {
+        let probe = FakeBluetoothTransport::default();
+        let sink = FakeNotificationSink::default();
+        let mut supervisor = Supervisor::new(
+            probe.clone(),
+            sink.clone(),
+            FakeClock::default(),
+            FakeStatusWriter::default(),
+        )
+        .with_ignored_apps(["com.ignored".to_owned()]);
+
+        for _ in 0..2 {
+            probe.observation(TransportObservation::Available);
+            supervisor.reconcile_once().await.unwrap();
+            probe.packet(TransportPacket::NotificationSource(vec![
+                0, 0, 0, 1, 1, 0, 0, 0,
+            ]));
+            probe.packet(TransportPacket::DataSource(notification_response(
+                1,
+                "com.ignored",
+            )));
+            supervisor.handle_one_packet().await.unwrap();
+            assert!(sink.calls().is_empty());
+            assert_eq!(supervisor.delivered_count(), 0);
+            probe.observation(TransportObservation::WaitingForPhone);
+            supervisor.reconcile_once().await.unwrap();
+        }
+        assert_eq!(probe.writes().len(), 2);
+
+        probe.observation(TransportObservation::Available);
+        supervisor.reconcile_once().await.unwrap();
+        probe.packet(TransportPacket::NotificationSource(vec![
+            0, 0, 0, 1, 2, 0, 0, 0,
+        ]));
+        probe.packet(TransportPacket::DataSource(notification_response(
+            2,
+            "com.allowed",
+        )));
+        probe.packet(TransportPacket::DataSource(app_response(
+            "com.allowed",
+            "Allowed",
+        )));
+        supervisor.handle_one_packet().await.unwrap();
+        assert!(matches!(
+            sink.calls().as_slice(),
+            [crate::notification::SinkCall::Create(_)]
+        ));
+        assert_eq!(supervisor.delivered_count(), 1);
     }
 
     #[tokio::test]
