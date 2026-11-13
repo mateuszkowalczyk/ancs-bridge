@@ -1,6 +1,6 @@
 # Iteration 012 — Notification app filter
 
-**Status:** Planned
+**Status:** Awaiting approval
 
 ## Sources
 
@@ -16,11 +16,19 @@
 - [x] Cover validation boundaries, policy persistence, ignored lifecycle, and unaffected delivery with automated checks.
 - [x] Document configuration, restart requirements, delivery-only filtering, and downgrade behavior.
 - [x] Run automated validation, simplify, and obtain separate subagent review; resolve actionable findings.
-- [ ] Validate filtered and unfiltered notifications on a real iPhone/desktop session across reconnect.
+- [x] Validate filtered and unfiltered notifications on a real iPhone/desktop session across reconnect.
 
 ## Validation
 
-Hardware notification validation remains user-run: configure Messages filtering, restart the daemon, verify Messages Added/Modified notifications stay hidden while an unlisted app delivers, then reconnect the iPhone and repeat. No iteration completion or archive approval has been requested.
+Manual validation passed on 2026-11-13 using the feature build and the user's
+paired iPhone/desktop session. The user confirmed TickTick delivered to both
+devices without exclusions, then appeared only on the iPhone with
+`com.TickTick.task` excluded while an unfiltered control delivered to both.
+After an iPhone Bluetooth off/on cycle, the same daemon returned to `ready`
+without restart or re-pair; the user confirmed the same filtering/control
+results for fresh notifications. TickTick same-UID Modified behavior was not
+directly exercised manually; deterministic session tests cover that path.
+No iteration completion or archive approval has been requested.
 
 Both validation checkpoints passed: formatting, all-target tests (109 passed,
 2 hardware tests ignored), all-target/all-feature Clippy with warnings denied,
