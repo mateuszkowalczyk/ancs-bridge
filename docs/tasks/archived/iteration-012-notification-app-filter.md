@@ -1,6 +1,6 @@
 # Iteration 012 — Notification app filter
 
-**Status:** Awaiting approval
+**Status:** Completed
 
 ## Sources
 
@@ -28,7 +28,9 @@ After an iPhone Bluetooth off/on cycle, the same daemon returned to `ready`
 without restart or re-pair; the user confirmed the same filtering/control
 results for fresh notifications. TickTick same-UID Modified behavior was not
 directly exercised manually; deterministic session tests cover that path.
-No iteration completion or archive approval has been requested.
+The user explicitly approved completion and archival on 2026-11-13 after the
+readiness report. Fresh completion checks passed: formatting, 109 tests,
+all-target/all-feature Clippy with warnings denied, and debug build.
 
 Both validation checkpoints passed: formatting, all-target tests (109 passed,
 2 hardware tests ignored), all-target/all-feature Clippy with warnings denied,
