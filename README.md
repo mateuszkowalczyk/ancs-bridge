@@ -35,6 +35,10 @@ Installation does not pair your phone or enable or start the service.
 
 ## Set up your iPhone
 
+The daemon is designed to integrate with a desktop UI or widget that handles
+pairing prompts. If you set it up manually in a terminal, you'll paste a JSON
+command to confirm the pairing.
+
 1. Before setup, remove any existing pairing between the iPhone and computer
    on both devices. On the iPhone, tap the information button next to your
    computer's Bluetooth name, then tap **Forget This Device**. On the computer,
