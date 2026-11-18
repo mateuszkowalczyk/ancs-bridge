@@ -11,34 +11,51 @@ notifications and shows them on the desktop; it never sends actions back to
 the phone. Notification text is not saved, and setup always asks you to
 confirm the phone you are pairing.
 
-## Quick start
+## Install from source on Arch Linux
 
-1. Open a terminal and install `ancs-bridge`:
+`ancs-bridge` is not available in the AUR because new AUR account registration
+is currently disabled. Use an x86_64 Arch system with network access,
+`base-devel`, and `git`. The package recipe declares the remaining build and
+runtime dependencies.
 
-   ```console
-   yay -S ancs-bridge
-   ```
+```console
+git clone https://github.com/mateuszkowalczyk/ancs-bridge.git
+cd ancs-bridge
+git checkout --detach refs/tags/v0.2.0 && cat PKGBUILD
+```
 
-2. Before setup, remove any existing pairing between the iPhone and computer
-   on both devices. On the iPhone, tap the information button next to
-   **omarchy**, then tap **Forget This Device**. On the computer, remove the
-   iPhone from the list of paired Bluetooth devices.
+The release's `PKGBUILD` pins and verifies the source archive. After reviewing
+the recipe, build and install the package as a regular user:
+
+```console
+makepkg --syncdeps --install
+```
+
+Installation does not pair your phone or enable or start the service.
+
+## Set up your iPhone
+
+1. Before setup, remove any existing pairing between the iPhone and computer
+   on both devices. On the iPhone, tap the information button next to your
+   computer's Bluetooth name, then tap **Forget This Device**. On the computer,
+   remove the iPhone from the list of paired Bluetooth devices.
 
    If either device was manually unpaired after a previous setup, run
    `ancs-bridge setup --repair` instead of the plain setup command below.
 
-3. Start setup and leave the terminal open:
+2. Start setup and leave the terminal open:
 
    ```console
    ancs-bridge setup
    ```
 
-4. On your iPhone, open **Settings → Bluetooth**.
+3. On your iPhone, open **Settings → Bluetooth**.
 
-5. Under **Other Devices**, tap **omarchy**. Always start a new pairing from
-   the iPhone, not from the computer's Bluetooth settings.
+4. Under **Other Devices**, tap your computer. It may appear as **ANCS Bridge**
+   or under its Bluetooth name. Start pairing from the iPhone, not the
+   computer's Bluetooth settings.
 
-6. When the terminal shows a `confirmation-request`, check that its phone and
+5. When the terminal shows a `confirmation-request`, check that its phone and
    pairing code match your iPhone. Then paste this line into the same terminal:
 
    ```json
@@ -48,26 +65,23 @@ confirm the phone you are pairing.
    Use `{"v":1,"command":"reject"}` to decline the displayed phone, or
    `{"v":1,"command":"cancel"}` to abort setup.
 
-7. Wait until the terminal shows `"event":"complete"`.
+6. Wait until the terminal shows `"event":"complete"`.
 
-8. Start the notification service and make it start automatically when you log
+7. Start the notification service and make it start automatically when you log
    in:
 
    ```console
    systemctl --user enable --now ancs-bridge.service
    ```
 
-9. Wait a few seconds, then check that the service reports `"state":"ready"`:
+8. Wait a few seconds, then check that the service reports `"state":"ready"`:
 
    ```console
    ancs-bridge status
    ```
 
-10. Create a reminder or another notification on your iPhone. It should now
+9. Create a reminder or another notification on your iPhone. It should now
    appear on your desktop.
-
-The package only installs the program and service file. It does not pair a
-phone, change your settings, or start the service without your confirmation.
 
 ## Integration
 
