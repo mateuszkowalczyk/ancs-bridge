@@ -134,22 +134,6 @@ The validated target is Arch Linux with BlueZ and a desktop notification D-Bus
 session. Other adapters are experimental until they pass the same acceptance
 checks.
 
-## Development
-
-The source tree includes the systemd user unit. Common development checks are:
-
-```console
-cargo fmt --all -- --check
-cargo clippy --offline --locked --all-targets --all-features -- -D warnings
-cargo test --offline --locked --all-targets
-cargo build --offline --locked --release
-```
-
-The package installs only the daemon, MIT license, and user unit. It never
-enables services, pairs devices, changes user configuration, or restarts
-WirePlumber during installation. Use `ancs-bridge teardown` before removing
-bridge-owned configuration, audio rules, or the optional bond.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
