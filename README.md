@@ -35,9 +35,9 @@ Installation does not pair your phone or enable or start the service.
 
 ## Set up your iPhone
 
-The daemon is designed to integrate with a desktop UI or widget that handles
-pairing prompts. If you set it up manually in a terminal, you'll paste a JSON
-command to confirm the pairing.
+The daemon is designed primarily to integrate with a desktop UI or widget
+that handles pairing prompts. If you set it up manually in a terminal,
+you'll need to paste a JSON command to confirm the pairing as described below.
 
 1. Before setup, remove any existing pairing between the iPhone and computer
    on both devices. On the iPhone, tap the information button next to your
@@ -63,7 +63,7 @@ command to confirm the pairing.
    pairing code match your iPhone. Then paste this line into the same terminal:
 
    ```json
-   {"v":1,"command":"confirm"}
+   { "v": 1, "command": "confirm" }
    ```
 
    Use `{"v":1,"command":"reject"}` to decline the displayed phone, or
@@ -125,8 +125,6 @@ If the iPhone is paired and connected but status remains `waiting-for-services`
 or reports `ancs-unavailable`, turn Bluetooth off and on again in the iPhone’s
 **Settings → Bluetooth**, wait for it to reconnect, then rerun
 `ancs-bridge status`.
-
-Do not unpair unless setup explicitly requires repair.
 
 The validated target is Arch Linux with BlueZ and a desktop notification D-Bus
 session. Other adapters are experimental until they pass the same acceptance
