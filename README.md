@@ -108,29 +108,23 @@ has been explicitly enabled.
 
 ## Troubleshooting
 
-```console
-systemctl --user status ancs-bridge.service
-journalctl --user-unit=ancs-bridge.service --no-pager
-ancs-bridge doctor
-ancs-bridge status
-```
+- **Check whether the service is running:** `systemctl --user status ancs-bridge.service`
+- **Check iPhone connection and forwarding readiness:** `ancs-bridge status`
+- **Check for missing prerequisites or configuration problems:** `ancs-bridge doctor`
+- **Read recent errors and recovery events:** `journalctl --user-unit=ancs-bridge.service --lines=50 --no-pager`
 
-The daemon does not force Bluetooth power or use generic Bluetooth connection
-attempts for routine recovery. After setup or service restart it passively
-recreates its BlueZ session if a bounded startup stall or repeated ANCS
-subscription failure is detected. If troubleshooting is needed, inspect the
-journal for `event_code=bluez-session-refresh`, `recovery_cause`, and
-`subscription_stage`; these fields contain metadata only. If setup is
-interrupted by a crash or power loss, check the adapter’s `Pairable` and
-`Discoverable` values before retrying.
+The daemon waits for the iPhone to reconnect rather than forcing a Bluetooth
+connection. For BlueZ recovery attempts, look in the journal for
+`event_code=bluez-session-refresh`, `recovery_cause`, and `subscription_stage`.
+These fields do not contain notification content.
+
+If setup was interrupted by a crash or power loss, check the adapter's
+`Pairable` and `Discoverable` values before retrying.
 
 If the iPhone is paired and connected but status remains `waiting-for-services`
 or reports `ancs-unavailable`, turn Bluetooth off and on again in the iPhone’s
-**Settings → Bluetooth**, wait for it to reconnect, and then run:
-
-```console
-ancs-bridge status
-```
+**Settings → Bluetooth**, wait for it to reconnect, then rerun
+`ancs-bridge status`.
 
 Do not unpair unless setup explicitly requires repair.
 
