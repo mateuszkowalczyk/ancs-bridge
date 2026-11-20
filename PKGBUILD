@@ -1,8 +1,8 @@
 # Maintainer: Mateusz Kowalczyk
-# Temporary API v1 baseline; review a newer source pin before plugin release.
+# Pin the reviewed source commit that precedes the packaging commit.
 pkgname=ancs-bridge
-pkgver=0.1.0
-pkgrel=2
+pkgver=0.2.0
+pkgrel=1
 pkgdesc='Secure local iPhone notification forwarding for Linux via Apple ANCS'
 arch=('x86_64')
 url='https://github.com/mateuszkowalczyk/ancs-bridge'
@@ -10,9 +10,9 @@ license=('MIT')
 options=('!debug')
 depends=('bluez' 'dbus' 'wireplumber')
 makedepends=('cargo' 'pkgconf')
-_commit=c4544e07060245f939f0a2fc0dbe18de10be2ba4
+_commit=2e98ce8abaae31be6a900da116b0e8418f3eddde
 source=("$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
-sha256sums=('df3361c020b40c9650f2f3b3d24afc7df79b95a5da5963cc1c258dfa47150183')
+sha256sums=('438c9cc3ab2cb22d9b0a11ab7b55fb3135908bdcdaf422f7e94bc1d3af954ad5')
 
 prepare() {
   cd "$srcdir/$pkgname-$_commit"

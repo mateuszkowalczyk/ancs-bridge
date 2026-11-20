@@ -1,7 +1,7 @@
 pkgbase = ancs-bridge
 	pkgdesc = Secure local iPhone notification forwarding for Linux via Apple ANCS
-	pkgver = 0.1.0
-	pkgrel = 2
+	pkgver = 0.2.0
+	pkgrel = 1
 	url = https://github.com/mateuszkowalczyk/ancs-bridge
 	arch = x86_64
 	license = MIT
@@ -11,7 +11,7 @@ pkgbase = ancs-bridge
 	depends = dbus
 	depends = wireplumber
 	options = !debug
-	source = ancs-bridge-c4544e07060245f939f0a2fc0dbe18de10be2ba4.tar.gz::https://github.com/mateuszkowalczyk/ancs-bridge/archive/c4544e07060245f939f0a2fc0dbe18de10be2ba4.tar.gz
-	sha256sums = df3361c020b40c9650f2f3b3d24afc7df79b95a5da5963cc1c258dfa47150183
+	source = ancs-bridge-2e98ce8abaae31be6a900da116b0e8418f3eddde.tar.gz::https://github.com/mateuszkowalczyk/ancs-bridge/archive/2e98ce8abaae31be6a900da116b0e8418f3eddde.tar.gz
+	sha256sums = 438c9cc3ab2cb22d9b0a11ab7b55fb3135908bdcdaf422f7e94bc1d3af954ad5
 
 pkgname = ancs-bridge
