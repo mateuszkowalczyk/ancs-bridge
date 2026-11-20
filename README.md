@@ -106,6 +106,33 @@ diagnostics use stderr. Status and diagnostics never contain notification
 titles, bodies, or app payloads. The user service starts at login only after it
 has been explicitly enabled.
 
+## Ignore notifications from selected apps
+
+To avoid duplicates from another notification relay, add iOS bundle identifiers
+to `$XDG_CONFIG_HOME/ancs-bridge/config.toml` (normally
+`~/.config/ancs-bridge/config.toml`):
+
+```toml
+[notifications]
+ignore_apps = ["com.apple.MobileSMS"]
+```
+
+Restart the daemon to apply changes:
+
+```console
+systemctl --user restart ancs-bridge.service
+```
+
+Matching is exact and case-sensitive, with no wildcards or normalization.
+The list accepts at most 100 entries, each 1–255 UTF-8 bytes, with no Unicode
+control characters or whitespace-only values. Omit the section or use an empty
+list to forward all apps as before. Repair and re-pair preserve the list.
+
+This only suppresses desktop delivery: notification content is still retrieved
+from the iPhone into memory before filtering. It is not a privacy boundary.
+Older binaries ignore this policy and may remove it when rewriting the config;
+downgrading disables filtering.
+
 ## Troubleshooting
 
 - **Check whether the service is running:** `systemctl --user status ancs-bridge.service`
@@ -120,6 +147,20 @@ These fields do not contain notification content.
 
 If setup was interrupted by a crash or power loss, check the adapter's
 `Pairable` and `Discoverable` values before retrying.
+
+Disconnected-phone recovery uses elapsed-time exponential backoff: 15 seconds,
+30 seconds, 1 minute, 2 minutes, 4 minutes, then 5 minutes between refreshes.
+It continues at five-minute intervals while advertising and checking state
+every five seconds, so normal incoming reconnections do not wait for a refresh.
+An active phone disconnect still triggers one immediate refresh, followed by
+the 30-second step. A successful ANCS connection or a BlueZ error resets the
+sequence. A genuinely stale advertisement can take up to five minutes to be
+refreshed, plus reconciliation and registration time. Refresh logs include
+`retry_after_secs` for the next delay.
+
+An ended or failed ANCS stream publishes `backoff` with reason
+`ancs-stream-failed` and waits five seconds before retrying. This prevents
+rapid resubscription loops while BlueZ still reports a stale connection.
 
 If the iPhone is paired and connected but status remains `waiting-for-services`
 or reports `ancs-unavailable`, turn Bluetooth off and on again in the iPhone’s

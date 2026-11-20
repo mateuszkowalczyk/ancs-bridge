@@ -69,6 +69,17 @@ are cached only in memory for the active ANCS session, with at most 100 cached
 apps. After lookup failure or timeout, the bundle identifier is used as the
 fallback display name.
 
+For configured `notifications.ignore_apps` identifiers, Added and Modified
+events are discarded after notification attribute decoding and cancellation
+handling, before app-name lookup or desktop delivery. Ignored notifications
+create no desktop handles or cached app names. Removed events remain harmless
+for ignored UIDs. The configured policy survives session end and reconnect.
+There is no ignored-notification counter or per-notification filtering log.
+
+This is a desktop delivery filter, not a privacy boundary: app identifier,
+title, and message are still retrieved into memory before filtering. Attribute
+failures retain the existing metadata-only diagnostics without payload values.
+
 ## Desktop notification lifecycle
 
 Each ANCS UID maps to one Freedesktop notification handle for the active
@@ -91,8 +102,9 @@ iPhone. Delivery failure logs metadata only and does not terminate the ANCS
 session.
 
 Notification app, title, message, and other payload content remain in memory
-only long enough to perform delivery. Payload content never appears in
-configuration, runtime status, diagnostic JSON, or journal messages.
+only long enough to perform delivery or filtering. Received payload content
+never appears in configuration, runtime status, diagnostic JSON, or journal
+messages. User-configured filter identifiers are policy, not received payload.
 
 ## Session end and reconnection
 

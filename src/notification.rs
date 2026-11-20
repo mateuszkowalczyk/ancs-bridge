@@ -82,15 +82,22 @@ impl Default for FreedesktopSink {
     }
 }
 
+fn desktop_notification(payload: &NotificationPayload) -> Notification {
+    let mut notification = Notification::new();
+    notification
+        .appname("ancs-bridge")
+        .icon("phone")
+        .summary(payload.summary())
+        .body(&payload.message);
+    notification
+}
+
 fn notification_actor(receiver: mpsc::Receiver<SinkCommand>) {
     let mut handles = HashMap::new();
     while let Ok(command) = receiver.recv() {
         match command {
             SinkCommand::Create { payload, reply } => {
-                let result = Notification::new()
-                    .appname("ancs-bridge")
-                    .summary(payload.summary())
-                    .body(&payload.message)
+                let result = desktop_notification(&payload)
                     .show()
                     .map_err(|error| error.to_string())
                     .map(|handle| {
@@ -105,10 +112,7 @@ fn notification_actor(receiver: mpsc::Receiver<SinkCommand>) {
                 payload,
                 reply,
             } => {
-                let result = Notification::new()
-                    .appname("ancs-bridge")
-                    .summary(payload.summary())
-                    .body(&payload.message)
+                let result = desktop_notification(&payload)
                     .id(handle.0)
                     .show()
                     .map_err(|error| error.to_string())
