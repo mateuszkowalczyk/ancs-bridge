@@ -168,18 +168,27 @@ fn aur_recipe_is_pinned_non_mutating_and_srcinfo_is_current() {
     let recipe = fs::read_to_string(repository.join("PKGBUILD")).unwrap();
     let srcinfo = fs::read_to_string(repository.join(".SRCINFO")).unwrap();
 
+    let package_version = format!("pkgver={}", env!("CARGO_PKG_VERSION"));
+    assert!(recipe.lines().any(|line| line == package_version));
+    let commit = recipe
+        .lines()
+        .find_map(|line| line.strip_prefix("_commit="))
+        .expect("PKGBUILD must pin a source commit");
+    assert!(commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let checksum = recipe
+        .lines()
+        .find_map(|line| line.strip_prefix("sha256sums=('")?.strip_suffix("')"))
+        .expect("PKGBUILD must verify the archive checksum");
+    assert!(checksum.len() == 64 && checksum.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
     for required in [
         "pkgname=ancs-bridge",
-        "pkgver=0.1.0",
-        "pkgrel=2",
         "arch=('x86_64')",
         "license=('MIT')",
         "options=('!debug')",
         "depends=('bluez' 'dbus' 'wireplumber')",
         "makedepends=('cargo' 'pkgconf')",
-        "_commit=c4544e07060245f939f0a2fc0dbe18de10be2ba4",
         "source=(\"$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz\")",
-        "sha256sums=('df3361c020b40c9650f2f3b3d24afc7df79b95a5da5963cc1c258dfa47150183')",
         "cargo fetch --locked --target",
         "cargo build --release --locked --frozen --offline",
         "cargo test --all-targets --locked --frozen --offline",
@@ -192,8 +201,6 @@ fn aur_recipe_is_pinned_non_mutating_and_srcinfo_is_current() {
 
     for required in [
         "pkgbase = ancs-bridge",
-        "pkgver = 0.1.0",
-        "pkgrel = 2",
         "arch = x86_64",
         "license = MIT",
         "options = !debug",
@@ -202,8 +209,6 @@ fn aur_recipe_is_pinned_non_mutating_and_srcinfo_is_current() {
         "depends = wireplumber",
         "makedepends = cargo",
         "makedepends = pkgconf",
-        "source = ancs-bridge-c4544e07060245f939f0a2fc0dbe18de10be2ba4.tar.gz::https://github.com/mateuszkowalczyk/ancs-bridge/archive/c4544e07060245f939f0a2fc0dbe18de10be2ba4.tar.gz",
-        "sha256sums = df3361c020b40c9650f2f3b3d24afc7df79b95a5da5963cc1c258dfa47150183",
     ] {
         assert!(srcinfo.contains(required), ".SRCINFO is missing {required}");
     }
