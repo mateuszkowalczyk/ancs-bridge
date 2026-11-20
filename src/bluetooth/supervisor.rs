@@ -16,7 +16,8 @@ const BACKOFF: [Duration; 5] = [
     Duration::from_secs(10),
     Duration::from_secs(30),
 ];
-const PASSIVE_REFRESH_RECONCILES: [u8; 2] = [3, 6];
+const PASSIVE_REFRESH_INITIAL_DELAY: Duration = Duration::from_secs(15);
+const PASSIVE_REFRESH_MAX_DELAY: Duration = Duration::from_secs(300);
 const SUBSCRIPTION_FAILURES_BEFORE_REFRESH: u8 = 2;
 
 pub struct Supervisor<T, N, C, S> {
@@ -28,8 +29,8 @@ pub struct Supervisor<T, N, C, S> {
     observed_session_error_count: u64,
     backoff_index: usize,
     session_active: bool,
-    waiting_for_phone_reconciles: u8,
-    passive_refresh_index: usize,
+    next_passive_refresh: Option<Duration>,
+    passive_refresh_delay: Duration,
     subscription_failures: u8,
 }
 
@@ -50,8 +51,8 @@ where
             observed_session_error_count: 0,
             backoff_index: 0,
             session_active: false,
-            waiting_for_phone_reconciles: 0,
-            passive_refresh_index: 0,
+            next_passive_refresh: None,
+            passive_refresh_delay: PASSIVE_REFRESH_INITIAL_DELAY,
             subscription_failures: 0,
         }
     }
@@ -121,32 +122,31 @@ where
     }
 
     fn reset_recovery_tracking(&mut self) {
-        self.waiting_for_phone_reconciles = 0;
-        self.passive_refresh_index = 0;
+        self.next_passive_refresh = None;
+        self.passive_refresh_delay = PASSIVE_REFRESH_INITIAL_DELAY;
         self.subscription_failures = 0;
     }
 
     fn waiting_for_phone_needs_refresh(&mut self) -> bool {
-        self.waiting_for_phone_reconciles = self.waiting_for_phone_reconciles.saturating_add(1);
-        let threshold = PASSIVE_REFRESH_RECONCILES[self
-            .passive_refresh_index
-            .min(PASSIVE_REFRESH_RECONCILES.len() - 1)];
-        self.waiting_for_phone_reconciles >= threshold
+        let now = self.clock.elapsed();
+        let deadline = self
+            .next_passive_refresh
+            .get_or_insert(now + self.passive_refresh_delay);
+        now >= *deadline
     }
 
     async fn refresh_bluez_session(&mut self, cause: &'static str) {
-        let attempt = self.passive_refresh_index + 1;
+        self.passive_refresh_delay =
+            (self.passive_refresh_delay * 2).min(PASSIVE_REFRESH_MAX_DELAY);
         tracing::info!(
             event_code = "bluez-session-refresh",
             recovery_cause = cause,
-            refresh_attempt = attempt,
+            retry_after_secs = self.passive_refresh_delay.as_secs(),
             "recreating BlueZ session and registrations for passive recovery"
         );
         self.transport.reset_bluez_session().await;
-        self.waiting_for_phone_reconciles = 0;
+        self.next_passive_refresh = Some(self.clock.elapsed() + self.passive_refresh_delay);
         self.subscription_failures = 0;
-        self.passive_refresh_index =
-            (self.passive_refresh_index + 1).min(PASSIVE_REFRESH_RECONCILES.len() - 1);
     }
 
     async fn update_device_name(&mut self) {
@@ -191,7 +191,7 @@ where
         match observation {
             TransportObservation::AdapterPoweredOff => {
                 self.end_session().await;
-                self.waiting_for_phone_reconciles = 0;
+                self.next_passive_refresh = None;
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::WaitingForAdapter, Some("adapter-powered-off"))
@@ -199,14 +199,13 @@ where
             }
             TransportObservation::Advertising => {
                 self.end_session().await;
-                self.waiting_for_phone_reconciles = 0;
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::Advertising, None).await;
             }
             TransportObservation::DeviceNotBonded => {
                 self.end_session().await;
-                self.waiting_for_phone_reconciles = 0;
+                self.next_passive_refresh = None;
                 self.snapshot.record_error("configured-device-not-bonded");
                 self.snapshot.connected = false;
                 self.snapshot.services_resolved = false;
@@ -227,21 +226,21 @@ where
             }
             TransportObservation::WaitingForServices => {
                 self.end_session().await;
-                self.waiting_for_phone_reconciles = 0;
+                self.next_passive_refresh = None;
                 self.snapshot.connected = true;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::WaitingForServices, None).await;
             }
             TransportObservation::WaitingForAuthorization => {
                 self.end_session().await;
-                self.waiting_for_phone_reconciles = 0;
+                self.next_passive_refresh = None;
                 self.snapshot.connected = true;
                 self.snapshot.services_resolved = true;
                 self.publish(RuntimeState::WaitingForAuthorization, None)
                     .await;
             }
             TransportObservation::Available => {
-                self.waiting_for_phone_reconciles = 0;
+                self.next_passive_refresh = None;
                 self.snapshot.connected = true;
                 self.snapshot.services_resolved = true;
                 self.snapshot.ancs_available = true;
@@ -327,6 +326,16 @@ where
         Ok(())
     }
 
+    async fn recover_stream_failure(&mut self) {
+        self.snapshot.record_error("ancs-stream-failed");
+        self.end_session().await;
+        self.publish(RuntimeState::Backoff, Some("ancs-stream-failed"))
+            .await;
+        // BlueZ may still report the phone as connected after a stream ends.
+        // Do not let successful discovery turn repeated stream failures into a busy loop.
+        self.clock.sleep(RECONCILE_INTERVAL).await;
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         self.publish_current().await;
         loop {
@@ -339,9 +348,7 @@ where
                 RuntimeState::Ready => {
                     if self.session.pending_len() > 0 {
                         if self.process_one_pending().await.is_err() {
-                            self.snapshot.record_error("ancs-stream-failed");
-                            self.end_session().await;
-                            self.publish_current().await;
+                            self.recover_stream_failure().await;
                         }
                         continue;
                     }
@@ -352,9 +359,7 @@ where
                         () = &mut reconcile => {}
                         result = self.handle_one_packet() => {
                             if result.is_err() {
-                                self.snapshot.record_error("ancs-stream-failed");
-                                self.end_session().await;
-                                self.publish_current().await;
+                                self.recover_stream_failure().await;
                             }
                         }
                     }
@@ -526,18 +531,17 @@ mod tests {
             TransportObservation::WaitingForPhone,
             TransportObservation::WaitingForPhone,
             TransportObservation::WaitingForPhone,
+            TransportObservation::WaitingForPhone,
             TransportObservation::Available,
         ] {
             probe.observation(observation);
         }
-        let mut supervisor = supervisor(
-            probe.clone(),
-            FakeClock::default(),
-            FakeStatusWriter::default(),
-        );
+        let clock = FakeClock::default();
+        let mut supervisor = supervisor(probe.clone(), clock.clone(), FakeStatusWriter::default());
 
-        for _ in 0..4 {
+        for _ in 0..5 {
             supervisor.reconcile_once().await.unwrap();
+            clock.advance(RECONCILE_INTERVAL);
         }
 
         assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
@@ -577,37 +581,110 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stalled_refresh_backs_off_and_ready_resets_the_sequence() {
+    async fn startup_refresh_uses_elapsed_time_and_caps_the_delay() {
         let probe = FakeBluetoothTransport::default();
-        for _ in 0..3 {
-            probe.observation(TransportObservation::WaitingForPhone);
-        }
-        for _ in 0..6 {
-            probe.observation(TransportObservation::WaitingForPhone);
-        }
-        probe.observation(TransportObservation::Available);
-        for _ in 0..3 {
-            probe.observation(TransportObservation::WaitingForPhone);
-        }
-        let mut supervisor = supervisor(
-            probe.clone(),
-            FakeClock::default(),
-            FakeStatusWriter::default(),
-        );
+        let clock = FakeClock::default();
+        let mut supervisor = supervisor(probe.clone(), clock.clone(), FakeStatusWriter::default());
+        probe.observation(TransportObservation::WaitingForPhone);
+        supervisor.reconcile_once().await.unwrap();
 
-        for _ in 0..13 {
+        for (attempt, seconds) in [15, 30, 60, 120, 240, 300, 300].into_iter().enumerate() {
+            // Reconciliation frequency alone must not trigger a refresh.
+            for _ in 0..20 {
+                probe.observation(TransportObservation::WaitingForPhone);
+                supervisor.reconcile_once().await.unwrap();
+            }
+            clock.advance(Duration::from_secs(seconds) - Duration::from_millis(1));
+            probe.observation(TransportObservation::WaitingForPhone);
+            supervisor.reconcile_once().await.unwrap();
+            assert_eq!(
+                probe
+                    .calls()
+                    .iter()
+                    .filter(|call| **call == "reset-bluez-session")
+                    .count(),
+                attempt
+            );
+
+            clock.advance(Duration::from_millis(1));
+            probe.observation(TransportObservation::WaitingForPhone);
+            supervisor.reconcile_once().await.unwrap();
+            assert_eq!(
+                probe
+                    .calls()
+                    .iter()
+                    .filter(|call| **call == "reset-bluez-session")
+                    .count(),
+                attempt + 1
+            );
+            // Re-registering the advertisement must not restart the deadline.
+            probe.observation(TransportObservation::Advertising);
             supervisor.reconcile_once().await.unwrap();
         }
+        assert!(!probe.calls().contains(&"connect-device"));
+    }
 
-        assert_eq!(
-            probe
+    #[tokio::test]
+    async fn ready_and_bluez_errors_reset_passive_refresh_delay() {
+        for reconnect in [false, true] {
+            let probe = FakeBluetoothTransport::default();
+            let clock = FakeClock::default();
+            let mut supervisor =
+                supervisor(probe.clone(), clock.clone(), FakeStatusWriter::default());
+            probe.observation(TransportObservation::WaitingForPhone);
+            supervisor.reconcile_once().await.unwrap();
+            for seconds in [15, 30, 60, 120, 240, 300] {
+                clock.advance(Duration::from_secs(seconds));
+                probe.observation(TransportObservation::WaitingForPhone);
+                supervisor.reconcile_once().await.unwrap();
+            }
+
+            if reconnect {
+                probe.observation(TransportObservation::Available);
+            } else {
+                probe.observation_error("BlueZ gone");
+            }
+            supervisor.reconcile_once().await.unwrap();
+            assert_eq!(
+                supervisor.snapshot().state,
+                if reconnect {
+                    RuntimeState::Ready
+                } else {
+                    RuntimeState::Backoff
+                }
+            );
+            probe.observation(TransportObservation::WaitingForPhone);
+            supervisor.reconcile_once().await.unwrap();
+            let resets = probe
                 .calls()
                 .iter()
                 .filter(|call| **call == "reset-bluez-session")
-                .count(),
-            3
-        );
-        assert!(!probe.calls().contains(&"connect-device"));
+                .count();
+            // An active disconnect refreshes immediately, consuming the first step.
+            let delay = if reconnect { 30 } else { 15 };
+            clock.advance(Duration::from_secs(delay - 1));
+            probe.observation(TransportObservation::WaitingForPhone);
+            supervisor.reconcile_once().await.unwrap();
+            assert_eq!(
+                probe
+                    .calls()
+                    .iter()
+                    .filter(|call| **call == "reset-bluez-session")
+                    .count(),
+                resets
+            );
+            clock.advance(Duration::from_secs(1));
+            probe.observation(TransportObservation::WaitingForPhone);
+            supervisor.reconcile_once().await.unwrap();
+            assert_eq!(
+                probe
+                    .calls()
+                    .iter()
+                    .filter(|call| **call == "reset-bluez-session")
+                    .count(),
+                resets + 1
+            );
+        }
     }
 
     #[tokio::test]
@@ -837,6 +914,59 @@ mod tests {
         supervisor.reconcile_once().await.unwrap();
         assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
         assert_eq!(status.values().last().unwrap().state, RuntimeState::Ready);
+    }
+
+    #[tokio::test]
+    async fn stream_failure_waits_before_resubscribing_and_then_resumes_delivery() {
+        let probe = FakeBluetoothTransport::default();
+        probe.wait_when_empty();
+        probe.observation(TransportObservation::Available);
+        probe.observation(TransportObservation::Available);
+        probe.observation(TransportObservation::Available);
+        probe.packet_error("Notification Source subscription ended");
+        probe.packet_error("Data Source subscription ended");
+        probe.packet(TransportPacket::NotificationSource(vec![
+            0, 0, 0, 1, 7, 0, 0, 0,
+        ]));
+        probe.packet(TransportPacket::DataSource(notification_response(
+            7, "app.one",
+        )));
+        probe.packet(TransportPacket::DataSource(app_response("app.one", "One")));
+        let clock = FakeClock::default();
+        let status = FakeStatusWriter::default();
+        let mut supervisor = supervisor(probe, clock.clone(), status.clone());
+        let run = supervisor.run();
+        tokio::pin!(run);
+
+        assert!(futures::poll!(&mut run).is_pending());
+        let failed = status.values().last().unwrap().clone();
+        assert_eq!(failed.state, RuntimeState::Backoff);
+        assert_eq!(failed.reason_code, Some("ancs-stream-failed"));
+        assert!(!failed.subscribed);
+        assert_eq!(failed.delivered_count, 0);
+        assert_eq!(failed.recoverable_error_count, 1);
+
+        clock.advance(RECONCILE_INTERVAL - Duration::from_millis(1));
+        assert!(futures::poll!(&mut run).is_pending());
+        assert_eq!(status.values().last().unwrap().delivered_count, 0);
+
+        clock.advance(Duration::from_millis(1));
+        assert!(futures::poll!(&mut run).is_pending());
+        let retried = status.values().last().unwrap().clone();
+        assert_eq!(retried.state, RuntimeState::Backoff);
+        assert_eq!(retried.delivered_count, 0);
+        assert_eq!(retried.recoverable_error_count, 2);
+
+        clock.advance(RECONCILE_INTERVAL - Duration::from_millis(1));
+        assert!(futures::poll!(&mut run).is_pending());
+        assert_eq!(status.values().last().unwrap().delivered_count, 0);
+
+        clock.advance(Duration::from_millis(1));
+        assert!(futures::poll!(&mut run).is_pending());
+        let recovered = status.values().last().unwrap().clone();
+        assert_eq!(recovered.state, RuntimeState::Ready);
+        assert_eq!(recovered.delivered_count, 1);
+        assert_eq!(recovered.recoverable_error_count, 2);
     }
 
     #[tokio::test]
