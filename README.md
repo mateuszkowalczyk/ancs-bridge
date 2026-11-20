@@ -11,63 +11,81 @@ notifications and shows them on the desktop; it never sends actions back to
 the phone. Notification text is not saved, and setup always asks you to
 confirm the phone you are pairing.
 
-## Quick start
+## Install from source on Arch Linux
 
-1. Open a terminal and install `ancs-bridge`:
+`ancs-bridge` is not available in the AUR because new AUR account registration
+is currently disabled. Use an x86_64 Arch system with network access,
+`base-devel`, and `git`. The package recipe declares the remaining build and
+runtime dependencies.
 
-   ```console
-   yay -S ancs-bridge
-   ```
+```console
+git clone https://github.com/mateuszkowalczyk/ancs-bridge.git
+cd ancs-bridge
+git checkout --detach refs/tags/v0.2.0 && cat PKGBUILD
+```
 
-2. Before setup, remove any existing pairing between the iPhone and computer
-   on both devices. On the iPhone, tap the information button next to
-   **omarchy**, then tap **Forget This Device**. On the computer, remove the
-   iPhone from the list of paired Bluetooth devices.
+The release's `PKGBUILD` pins and verifies the source archive. After reviewing
+the recipe, build and install the package as a regular user:
+
+```console
+makepkg --syncdeps --install
+```
+
+Installation does not pair your phone or enable or start the service.
+
+## Set up your iPhone
+
+The daemon is designed primarily to integrate with a desktop UI or widget
+that handles pairing prompts. If you set it up manually in a terminal,
+you'll need to paste a JSON command to confirm the pairing as described below.
+
+1. Before setup, remove any existing pairing between the iPhone and computer
+   on both devices. On the iPhone, tap the information button next to your
+   computer's Bluetooth name, then tap **Forget This Device**. On the computer,
+   remove the iPhone from the list of paired Bluetooth devices.
 
    If either device was manually unpaired after a previous setup, run
    `ancs-bridge setup --repair` instead of the plain setup command below.
 
-3. Start setup and leave the terminal open:
+2. Start setup and leave the terminal open:
 
    ```console
    ancs-bridge setup
    ```
 
-4. On your iPhone, open **Settings → Bluetooth**.
+3. On your iPhone, open **Settings → Bluetooth**.
 
-5. Under **Other Devices**, tap **omarchy**. Always start a new pairing from
-   the iPhone, not from the computer's Bluetooth settings.
+4. Under **Other Devices**, tap your computer. It may appear as **ANCS Bridge**
+   or under its Bluetooth name. Start pairing from the iPhone, not the
+   computer's Bluetooth settings.
 
-6. When the terminal shows a `confirmation-request`, check that its phone and
+5. When the terminal shows a `confirmation-request`, check that its phone and
    pairing code match your iPhone. Then paste this line into the same terminal:
 
    ```json
-   {"v":1,"command":"confirm"}
+   { "v": 1, "command": "confirm" }
    ```
 
    Use `{"v":1,"command":"reject"}` to decline the displayed phone, or
    `{"v":1,"command":"cancel"}` to abort setup.
 
-7. Wait until the terminal shows `"event":"complete"`.
+6. Wait until the terminal shows `"event":"complete"`.
 
-8. Start the notification service and make it start automatically when you log
+7. Start the notification service and make it start automatically when you log
    in:
 
    ```console
    systemctl --user enable --now ancs-bridge.service
    ```
 
-9. Wait a few seconds, then check that the service reports `"state":"ready"`:
+8. Wait a few seconds, then check that the service reports `"state":"ready"`:
 
    ```console
    ancs-bridge status
    ```
 
-10. Create a reminder or another notification on your iPhone. It should now
+9. Create a reminder or another notification on your iPhone. It should now
    appear on your desktop.
-
-The package only installs the program and service file. It does not pair a
-phone, change your settings, or start the service without your confirmation.
 
 ## Integration
 
@@ -117,65 +135,27 @@ downgrading disables filtering.
 
 ## Troubleshooting
 
-```console
-systemctl --user status ancs-bridge.service
-journalctl --user-unit=ancs-bridge.service --no-pager
-ancs-bridge doctor
-ancs-bridge status
-```
+- **Check whether the service is running:** `systemctl --user status ancs-bridge.service`
+- **Check iPhone connection and forwarding readiness:** `ancs-bridge status`
+- **Check for missing prerequisites or configuration problems:** `ancs-bridge doctor`
+- **Read recent errors and recovery events:** `journalctl --user-unit=ancs-bridge.service --lines=50 --no-pager`
 
-The daemon does not force Bluetooth power or use generic Bluetooth connection
-attempts for routine recovery. After setup or service restart it passively
-recreates its BlueZ session if a prolonged disconnected wait or repeated ANCS
-subscription failure is detected. If troubleshooting is needed, inspect the
-journal for `event_code=bluez-session-refresh`, `recovery_cause`, and
-`subscription_stage`; these fields contain metadata only. If setup is
-interrupted by a crash or power loss, check the adapter’s `Pairable` and
-`Discoverable` values before retrying.
+The daemon waits for the iPhone to reconnect rather than forcing a Bluetooth
+connection. For BlueZ recovery attempts, look in the journal for
+`event_code=bluez-session-refresh`, `recovery_cause`, and `subscription_stage`.
+These fields do not contain notification content.
 
-Disconnected-phone recovery uses elapsed-time exponential backoff: 15 seconds,
-30 seconds, 1 minute, 2 minutes, 4 minutes, then 5 minutes between refreshes.
-It continues at five-minute intervals while advertising and checking state
-every five seconds, so normal incoming reconnections do not wait for a refresh.
-An active phone disconnect still triggers one immediate refresh, followed by
-the 30-second step. A successful ANCS connection or a BlueZ error resets the
-sequence. A genuinely stale advertisement can take up to five minutes to be
-refreshed, plus reconciliation and registration time. Refresh logs include
-`retry_after_secs` for the next delay.
-
-An ended or failed ANCS stream publishes `backoff` with reason
-`ancs-stream-failed` and waits five seconds before retrying. This prevents
-rapid resubscription loops while BlueZ still reports a stale connection.
+If setup was interrupted by a crash or power loss, check the adapter's
+`Pairable` and `Discoverable` values before retrying.
 
 If the iPhone is paired and connected but status remains `waiting-for-services`
 or reports `ancs-unavailable`, turn Bluetooth off and on again in the iPhone’s
-**Settings → Bluetooth**, wait for it to reconnect, and then run:
-
-```console
-ancs-bridge status
-```
-
-Do not unpair unless setup explicitly requires repair.
+**Settings → Bluetooth**, wait for it to reconnect, then rerun
+`ancs-bridge status`.
 
 The validated target is Arch Linux with BlueZ and a desktop notification D-Bus
 session. Other adapters are experimental until they pass the same acceptance
 checks.
-
-## Development
-
-The source tree includes the systemd user unit. Common development checks are:
-
-```console
-cargo fmt --all -- --check
-cargo clippy --offline --locked --all-targets --all-features -- -D warnings
-cargo test --offline --locked --all-targets
-cargo build --offline --locked --release
-```
-
-The package installs only the daemon, MIT license, and user unit. It never
-enables services, pairs devices, changes user configuration, or restarts
-WirePlumber during installation. Use `ancs-bridge teardown` before removing
-bridge-owned configuration, audio rules, or the optional bond.
 
 ## License
 
