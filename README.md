@@ -88,6 +88,33 @@ diagnostics use stderr. Status and diagnostics never contain notification
 titles, bodies, or app payloads. The user service starts at login only after it
 has been explicitly enabled.
 
+## Ignore notifications from selected apps
+
+To avoid duplicates from another notification relay, add iOS bundle identifiers
+to `$XDG_CONFIG_HOME/ancs-bridge/config.toml` (normally
+`~/.config/ancs-bridge/config.toml`):
+
+```toml
+[notifications]
+ignore_apps = ["com.apple.MobileSMS"]
+```
+
+Restart the daemon to apply changes:
+
+```console
+systemctl --user restart ancs-bridge.service
+```
+
+Matching is exact and case-sensitive, with no wildcards or normalization.
+The list accepts at most 100 entries, each 1–255 UTF-8 bytes, with no Unicode
+control characters or whitespace-only values. Omit the section or use an empty
+list to forward all apps as before. Repair and re-pair preserve the list.
+
+This only suppresses desktop delivery: notification content is still retrieved
+from the iPhone into memory before filtering. It is not a privacy boundary.
+Older binaries ignore this policy and may remove it when rewriting the config;
+downgrading disables filtering.
+
 ## Troubleshooting
 
 ```console

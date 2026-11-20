@@ -7,8 +7,8 @@ use crate::{
     audio::{reconcile_with_reload, rollback_change, AudioRule, WIREPLUMBER_UNIT},
     bluetooth::{hid, transport},
     config::{
-        BluetoothConfiguration, Configuration, ConfigurationStore, ValidatedConfiguration,
-        CONFIG_SCHEMA_VERSION,
+        BluetoothConfiguration, Configuration, ConfigurationStore, NotificationsConfiguration,
+        ValidatedConfiguration, CONFIG_SCHEMA_VERSION,
     },
     diagnostics::{select_adapter, AdapterSelection},
     machine::{ConfirmationKind, SetupFailure},
@@ -610,9 +610,8 @@ impl SetupBackend for BluerSetupBackend {
             .ok_or(SetupFailure::ConfigurationWriteFailed)?
             .name()
             .to_owned();
-        let configuration = Configuration {
-            schema_version: CONFIG_SCHEMA_VERSION,
-            bluetooth: BluetoothConfiguration {
+        let configuration = configuration_for_commit(
+            BluetoothConfiguration {
                 adapter: adapter_name,
                 adapter_address: Some(
                     self.adapter
@@ -626,7 +625,8 @@ impl SetupBackend for BluerSetupBackend {
                 device_address: address.to_string(),
                 device_name,
             },
-        };
+            self.configured.as_ref(),
+        );
         commit_persistent(
             &self.config_store,
             &configuration,
@@ -654,6 +654,21 @@ fn requested_repair_target(
     configured
         .map(|configuration| Some(configuration.device_address))
         .ok_or(SetupFailure::RepairTargetUnknown)
+}
+
+fn configuration_for_commit(
+    bluetooth: BluetoothConfiguration,
+    configured: Option<&ValidatedConfiguration>,
+) -> Configuration {
+    Configuration {
+        schema_version: CONFIG_SCHEMA_VERSION,
+        bluetooth,
+        notifications: configured
+            .filter(|configuration| !configuration.ignored_apps.is_empty())
+            .map(|configuration| NotificationsConfiguration {
+                ignore_apps: configuration.ignored_apps.clone(),
+            }),
+    }
 }
 
 fn commit_persistent(
@@ -866,6 +881,7 @@ mod tests {
                 device_address: "AA:BB:CC:DD:EE:FF".into(),
                 device_name: "iPhone".into(),
             },
+            notifications: None,
         }
     }
 
@@ -1066,6 +1082,104 @@ mod tests {
         assert!(old_rule.role_path().exists());
         assert!(!new_rule.path().exists());
         assert!(new_rule.role_path().exists());
+        assert_eq!(*services.restarts.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn repair_and_repairing_commit_preserve_notification_policy() {
+        let directory = TestDirectory::new("setup-notifications-persistence");
+        let store = ConfigurationStore::new(directory.path().join("config.toml"));
+        let mut original = configuration();
+        original.notifications = Some(NotificationsConfiguration {
+            ignore_apps: vec!["com.Example.App".into(), " café ".into()],
+        });
+        let configured = store.save(&original).unwrap();
+        let old_rule = AudioRule::new(directory.path().join("wp"), configured.device_address);
+        old_rule.apply().unwrap();
+        let services = FakeServices::default();
+
+        assert_eq!(
+            requested_repair_target(SetupOptions { repair: true }, Some(&configured)),
+            Ok(Some(configured.device_address))
+        );
+        let repaired = configuration_for_commit(original.bluetooth.clone(), Some(&configured));
+        commit_persistent(
+            &store,
+            &repaired,
+            Some(&old_rule),
+            Some(&old_rule),
+            &services,
+        )
+        .unwrap();
+        assert_eq!(store.load().unwrap(), Some(configured.clone()));
+
+        let mut bluetooth = original.bluetooth.clone();
+        bluetooth.device_address = "22:33:44:55:66:77".into();
+        bluetooth.device_name = "Replacement iPhone".into();
+        let replacement = configuration_for_commit(bluetooth, Some(&configured));
+        let new_rule = AudioRule::new(
+            directory.path().join("wp"),
+            replacement.bluetooth.device_address.parse().unwrap(),
+        );
+        commit_persistent(
+            &store,
+            &replacement,
+            Some(&old_rule),
+            Some(&new_rule),
+            &services,
+        )
+        .unwrap();
+        let persisted = store.load().unwrap().unwrap();
+        assert_eq!(
+            persisted.device_address,
+            replacement
+                .bluetooth
+                .device_address
+                .parse::<Address>()
+                .unwrap()
+        );
+        assert_eq!(persisted.ignored_apps, configured.ignored_apps);
+        assert!(!old_rule.path().exists());
+        assert!(new_rule.path().exists());
+    }
+
+    #[test]
+    fn failed_repairing_commit_retains_policy_and_rolls_back_audio() {
+        let directory = TestDirectory::new("setup-notifications-rollback");
+        let store = ConfigurationStore::new(directory.path().join("config.toml"));
+        let mut original = configuration();
+        original.notifications = Some(NotificationsConfiguration {
+            ignore_apps: vec!["com.private.App".into()],
+        });
+        let configured = store.save(&original).unwrap();
+        let before = std::fs::read(store.path()).unwrap();
+        let old_rule = AudioRule::new(directory.path().join("wp"), configured.device_address);
+        old_rule.apply().unwrap();
+        let mut bluetooth = original.bluetooth;
+        bluetooth.device_address = "22:33:44:55:66:77".into();
+        let mut replacement = configuration_for_commit(bluetooth, Some(&configured));
+        let new_rule = AudioRule::new(
+            directory.path().join("wp"),
+            replacement.bluetooth.device_address.parse().unwrap(),
+        );
+        // Fail the final configuration save after audio reconciliation.
+        replacement.bluetooth.adapter = "invalid/adapter".into();
+        let services = FakeServices::default();
+        assert_eq!(
+            commit_persistent(
+                &store,
+                &replacement,
+                Some(&old_rule),
+                Some(&new_rule),
+                &services,
+            ),
+            Err(SetupFailure::ConfigurationWriteFailed)
+        );
+        assert_eq!(std::fs::read(store.path()).unwrap(), before);
+        assert_eq!(store.load().unwrap(), Some(configured));
+        assert!(old_rule.path().exists());
+        assert!(old_rule.role_path().exists());
+        assert!(!new_rule.path().exists());
         assert_eq!(*services.restarts.lock().unwrap(), 2);
     }
 

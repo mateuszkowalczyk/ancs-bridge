@@ -19,8 +19,10 @@ V1 must provide:
 - Suppression of the configured iPhone as a PipeWire audio endpoint, plus
   user-level output-only Bluetooth roles that keep phones from selecting the
   desktop as a speaker/headset while preserving headphone output/input.
+- Optional exact iOS bundle-identifier exclusions to suppress duplicate desktop
+  delivery while retaining normal forwarding for other apps.
 
-V1 explicitly excludes notification actions, replies, history, filters, multiple phones, media control, Apple Media Service, MAP/SMS, and Omarchy-specific frontend behavior.
+V1 explicitly excludes notification actions, replies, history, advanced notification filters, multiple phones, media control, Apple Media Service, MAP/SMS, and Omarchy-specific frontend behavior.
 
 ## Implementation architecture
 
@@ -72,7 +74,7 @@ Implement the codec directly from [Apple's ANCS specification](https://developer
 - Added creates a notification, Modified replaces it, and Removed closes it.
 - V1 exposes no action buttons and sends no commands back to the phone.
 - Notification-delivery failure logs metadata only, optionally updates diagnostic state, and does not terminate the Bluetooth session.
-- Notification content remains in memory only long enough to deliver the desktop notification.
+- Notification content remains in memory only long enough to deliver or discard the desktop notification.
 
 ## Runtime state machine
 

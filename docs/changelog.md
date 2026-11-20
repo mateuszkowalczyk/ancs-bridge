@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-11-13 — Iteration 012
+
+Iteration: `docs/tasks/archived/iteration-012-notification-app-filter.md`
+
+- Added optional exact, case-sensitive iOS bundle-identifier exclusions to
+  suppress duplicate desktop notifications while other apps keep forwarding.
+- Preserved notification policy across setup repair, re-pair, and reconnect,
+  with bounded configuration validation and documented restart/downgrade limits.
+- Validated TickTick filtering and unfiltered control delivery on a real
+  iPhone/desktop session before and after passive Bluetooth reconnection.
+
 ## 2026-08-28 — Iteration 011
 
 Iteration: `docs/tasks/archived/iteration-011-fresh-start-ancs-recovery.md`

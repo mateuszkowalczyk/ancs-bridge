@@ -36,6 +36,10 @@ adapter_address = "11:22:33:44:55:66"
 device_address = "AA:BB:CC:DD:EE:FF"
 device_name = "iPhone"
 
+# Optional desktop-delivery exclusions; omitted when empty.
+[notifications]
+ignore_apps = ["com.apple.MobileSMS"]
+
 ```
 
 `adapter_address` is the controller's stable public Bluetooth address;
@@ -44,6 +48,10 @@ The device address is the bonded BlueZ device identity selected during setup.
 Validate both addresses before persistence or path generation. Existing version
 1 configurations without `adapter_address` remain readable for a one-time,
 explicitly confirmed migration.
+
+The optional notification policy uses exact, case-sensitive bundle identifiers
+and remains part of schema version 1. See `docs/specs/runtime-machine-api.md`
+for validation bounds and restart/downgrade behavior.
 
 ## Runtime status schema
 
