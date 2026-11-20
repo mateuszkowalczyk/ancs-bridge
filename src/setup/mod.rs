@@ -629,6 +629,18 @@ mod tests {
         assert_eq!(events.last().unwrap()["code"], "backend-failed");
     }
 
+    #[tokio::test]
+    async fn cleanup_failure_prevents_setup_from_applying_configuration() {
+        let backend = FakeBackend::fresh();
+        backend.state.lock().unwrap().cleanup = Err(SetupFailure::CleanupFailed);
+        let (ok, events) = run(backend, "{\"v\":1,\"command\":\"confirm\"}\n").await;
+        assert!(!ok);
+        assert_eq!(events.last().unwrap()["code"], "cleanup-failed");
+        assert!(!events.iter().any(
+            |event| event["state"] == "applying-configuration" || event["event"] == "complete"
+        ));
+    }
+
     async fn timeout_case(
         backend: FakeBackend,
         trigger_event: &str,

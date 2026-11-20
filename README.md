@@ -60,7 +60,8 @@ you'll need to paste a JSON command to confirm the pairing as described below.
    computer's Bluetooth settings.
 
 5. When the terminal shows a `confirmation-request`, check that its phone and
-   pairing code match your iPhone. Then paste this line into the same terminal:
+   pairing code match your iPhone. If they match, tap **Pair** on your iPhone
+   and promptly paste this line into the same terminal:
 
    ```json
    { "v": 1, "command": "confirm" }
@@ -69,7 +70,8 @@ you'll need to paste a JSON command to confirm the pairing as described below.
    Use `{"v":1,"command":"reject"}` to decline the displayed phone, or
    `{"v":1,"command":"cancel"}` to abort setup.
 
-6. Wait until the terminal shows `"event":"complete"`.
+6. Tap **Allow** if your iPhone asks to share notifications, then wait for the
+   terminal to show `"event":"complete"`.
 
 7. Start the notification service and make it start automatically when you log
    in:
