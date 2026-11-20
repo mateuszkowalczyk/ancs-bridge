@@ -10,9 +10,9 @@ license=('MIT')
 options=('!debug')
 depends=('bluez' 'dbus' 'wireplumber')
 makedepends=('cargo' 'pkgconf')
-_commit=2e98ce8abaae31be6a900da116b0e8418f3eddde
+_commit=7cfbe8ba8a0efe7ce7f11c59ec5768299beff9ab
 source=("$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
-sha256sums=('438c9cc3ab2cb22d9b0a11ab7b55fb3135908bdcdaf422f7e94bc1d3af954ad5')
+sha256sums=('139c067bce91457fd630cc1649fbf54ccdf533b71f38646f12ddb7af87b78306')
 
 prepare() {
   cd "$srcdir/$pkgname-$_commit"
