@@ -55,7 +55,7 @@ Abstract BlueZ transport, notification sink, clock, and status writer behind tra
 
 Implement the codec directly from [Apple's ANCS specification](https://developer.apple.com/library/archive/documentation/CoreBluetooth/Reference/AppleNotificationCenterServiceSpecification/Specification/Specification.html):
 
-- Discover Notification Source, Data Source, and Control Point after `ServicesResolved` and ANCS authorization.
+- Discover Notification Source, Data Source, and Control Point on the connected bonded iPhone. If BlueZ reports unresolved services but exports ANCS, require live subscriptions rather than trusting cached GATT objects.
 - Subscribe to Data Source before Notification Source.
 - Parse the eight-byte notification event structure.
 - Allow exactly one outstanding Control Point request, with a five-second timeout and bounded pending queue.
@@ -84,7 +84,7 @@ At daemon start:
 2. Register the HID GATT application and runtime advertisement.
 3. Accept only the configured bonded phone.
 4. Wait for the iPhone to initiate or restore the connection.
-5. Wait for `ServicesResolved` and ANCS authorization.
+5. Wait for ANCS publication and authorization on the connected bonded iPhone.
 6. Subscribe Data Source and then Notification Source.
 7. Publish `ready`.
 

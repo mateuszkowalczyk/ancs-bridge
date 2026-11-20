@@ -132,7 +132,7 @@ where
         self.subscription_failures = 0;
     }
 
-    fn waiting_for_phone_needs_refresh(&mut self) -> bool {
+    fn passive_refresh_is_due(&mut self) -> bool {
         let now = self.clock.elapsed();
         let deadline = self
             .next_passive_refresh
@@ -222,7 +222,7 @@ where
                 self.end_session().await;
                 if had_active_session {
                     self.refresh_bluez_session("phone-disconnected").await;
-                } else if self.waiting_for_phone_needs_refresh() {
+                } else if self.passive_refresh_is_due() {
                     self.refresh_bluez_session("startup-stall").await;
                 }
                 self.snapshot.connected = false;
@@ -231,7 +231,9 @@ where
             }
             TransportObservation::WaitingForServices => {
                 self.end_session().await;
-                self.next_passive_refresh = None;
+                if self.passive_refresh_is_due() {
+                    self.refresh_bluez_session("services-unresolved").await;
+                }
                 self.snapshot.connected = true;
                 self.snapshot.services_resolved = false;
                 self.publish(RuntimeState::WaitingForServices, None).await;
@@ -244,10 +246,11 @@ where
                 self.publish(RuntimeState::WaitingForAuthorization, None)
                     .await;
             }
-            TransportObservation::Available => {
+            TransportObservation::Available
+            | TransportObservation::UnresolvedAncs { subscribed: false } => {
                 self.next_passive_refresh = None;
                 self.snapshot.connected = true;
-                self.snapshot.services_resolved = true;
+                self.snapshot.services_resolved = observation == TransportObservation::Available;
                 self.snapshot.ancs_available = true;
                 self.publish(RuntimeState::Subscribing, None).await;
                 match self.transport.subscribe().await {
@@ -279,10 +282,11 @@ where
                     }
                 }
             }
-            TransportObservation::Ready => {
+            TransportObservation::Ready
+            | TransportObservation::UnresolvedAncs { subscribed: true } => {
                 self.session_active = true;
                 self.snapshot.connected = true;
-                self.snapshot.services_resolved = true;
+                self.snapshot.services_resolved = observation == TransportObservation::Ready;
                 self.snapshot.ancs_available = true;
                 self.snapshot.subscribed = true;
                 self.backoff_index = 0;
@@ -681,6 +685,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unresolved_services_share_passive_refresh_backoff_until_ready() {
+        let probe = FakeBluetoothTransport::default();
+        let clock = FakeClock::default();
+        let mut supervisor = supervisor(probe.clone(), clock.clone(), FakeStatusWriter::default());
+        for (seconds, observation, expected_refreshes) in [
+            (0, TransportObservation::WaitingForPhone, 0),
+            (14, TransportObservation::WaitingForServices, 0),
+            (1, TransportObservation::WaitingForServices, 1),
+            (0, TransportObservation::Advertising, 1),
+            (29, TransportObservation::WaitingForServices, 1),
+            (1, TransportObservation::WaitingForServices, 2),
+            (0, TransportObservation::Available, 2),
+        ] {
+            clock.advance(Duration::from_secs(seconds));
+            probe.observation(observation);
+            supervisor.reconcile_once().await.unwrap();
+            assert_eq!(
+                probe
+                    .calls()
+                    .iter()
+                    .filter(|call| **call == "reset-bluez-session")
+                    .count(),
+                expected_refreshes
+            );
+        }
+        assert_eq!(supervisor.snapshot().state, RuntimeState::Ready);
+        assert!(!probe.calls().contains(&"connect-device"));
+    }
+
+    #[tokio::test]
     async fn ready_and_bluez_errors_reset_passive_refresh_delay() {
         for reconnect in [false, true] {
             let probe = FakeBluetoothTransport::default();
@@ -740,6 +774,30 @@ mod tests {
                     .count(),
                 resets + 1
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn unresolved_ancs_requires_subscription_and_reports_bluez_flag() {
+        let probe = FakeBluetoothTransport::default();
+        probe.fail_subscriptions(1);
+        probe.observation(TransportObservation::UnresolvedAncs { subscribed: false });
+        probe.observation(TransportObservation::UnresolvedAncs { subscribed: false });
+        probe.observation(TransportObservation::UnresolvedAncs { subscribed: true });
+        let mut supervisor = supervisor(probe, FakeClock::default(), FakeStatusWriter::default());
+
+        supervisor.reconcile_once().await.unwrap();
+        assert_eq!(
+            supervisor.snapshot().state,
+            RuntimeState::WaitingForAuthorization
+        );
+        assert!(!supervisor.snapshot().subscribed);
+        for _ in 0..2 {
+            supervisor.reconcile_once().await.unwrap();
+            let snapshot = supervisor.snapshot();
+            assert_eq!(snapshot.state, RuntimeState::Ready);
+            assert!(snapshot.subscribed);
+            assert!(!snapshot.services_resolved);
         }
     }
 

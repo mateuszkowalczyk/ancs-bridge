@@ -55,58 +55,98 @@ struct AgentNotice {
     passkey: Option<u32>,
 }
 
+enum AgentDecision {
+    Approve(oneshot::Sender<()>),
+    Reject,
+}
+
 #[derive(Default)]
-struct AgentGateState {
-    active: Option<Address>,
-    approved: Option<Address>,
-    waiters: Vec<oneshot::Sender<bool>>,
+enum AgentGateState {
+    #[default]
+    Idle,
+    Pending(Address, oneshot::Sender<AgentDecision>),
+    Confirming,
+    Approved(Address),
 }
 
 struct AgentGate {
+    adapter: String,
     state: Mutex<AgentGateState>,
     notices: mpsc::UnboundedSender<AgentNotice>,
 }
 
 impl AgentGate {
-    async fn request(&self, address: Address, passkey: Option<u32>) -> Result<(), AgentReqError> {
+    async fn request(
+        &self,
+        adapter: &str,
+        address: Address,
+        passkey: Option<u32>,
+    ) -> Result<(), AgentReqError> {
+        if adapter != self.adapter {
+            return Err(AgentReqError::Rejected);
+        }
         let receiver = {
             let mut state = self.state.lock().map_err(|_| AgentReqError::Canceled)?;
-            if state.approved == Some(address) {
-                return Ok(());
-            }
-            if state.approved.is_some() || state.active.is_some_and(|active| active != address) {
+            if !matches!(*state, AgentGateState::Idle) {
                 return Err(AgentReqError::Rejected);
             }
-            let first = state.active.is_none();
-            state.active = Some(address);
             let (sender, receiver) = oneshot::channel();
-            state.waiters.push(sender);
-            if first && self.notices.send(AgentNotice { address, passkey }).is_err() {
-                return Err(AgentReqError::Canceled);
-            }
+            self.notices
+                .send(AgentNotice { address, passkey })
+                .map_err(|_| AgentReqError::Canceled)?;
+            *state = AgentGateState::Pending(address, sender);
             receiver
         };
         match receiver.await {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(AgentReqError::Rejected),
+            Ok(AgentDecision::Approve(ack)) => {
+                let mut state = self.state.lock().map_err(|_| AgentReqError::Canceled)?;
+                ack.send(()).map_err(|_| AgentReqError::Canceled)?;
+                *state = AgentGateState::Approved(address);
+                Ok(())
+            }
+            Ok(AgentDecision::Reject) => Err(AgentReqError::Rejected),
             Err(_) => Err(AgentReqError::Canceled),
         }
     }
 
-    fn answer(&self, address: Address, accepted: bool) -> Result<(), SetupFailure> {
-        let mut state = self.state.lock().map_err(|_| SetupFailure::BackendFailed)?;
-        if state.active != Some(address) {
-            return Err(SetupFailure::PairingFailed);
-        }
+    async fn answer(&self, address: Address, accepted: bool) -> Result<(), SetupFailure> {
+        let sender = {
+            let mut state = self.state.lock().map_err(|_| SetupFailure::BackendFailed)?;
+            match std::mem::take(&mut *state) {
+                AgentGateState::Pending(active, sender) if active == address => {
+                    if accepted {
+                        *state = AgentGateState::Confirming;
+                    }
+                    sender
+                }
+                previous => {
+                    *state = previous;
+                    return Err(SetupFailure::PairingFailed);
+                }
+            }
+        };
         if accepted {
-            state.approved = Some(address);
+            // BlueZ can cancel and drop the callback even after the decision is sent.
+            let (ack, receipt) = oneshot::channel();
+            if sender.send(AgentDecision::Approve(ack)).is_err() || receipt.await.is_err() {
+                eprintln!("ancs-bridge: BlueZ pairing confirmation expired before approval");
+                return Err(SetupFailure::PairingFailed);
+            }
         } else {
-            state.active = None;
-        }
-        for waiter in state.waiters.drain(..) {
-            let _ = waiter.send(accepted);
+            let _ = sender.send(AgentDecision::Reject);
         }
         Ok(())
+    }
+
+    fn authorize_service(&self, adapter: &str, address: Address) -> Result<(), AgentReqError> {
+        let state = self.state.lock().map_err(|_| AgentReqError::Canceled)?;
+        if adapter == self.adapter
+            && matches!(*state, AgentGateState::Approved(approved) if approved == address)
+        {
+            Ok(())
+        } else {
+            Err(AgentReqError::Rejected)
+        }
     }
 }
 
@@ -124,6 +164,7 @@ pub struct BluerSetupBackend {
     initial_bonds: HashSet<Address>,
     gate: Option<Arc<AgentGate>>,
     notices: Option<mpsc::UnboundedReceiver<AgentNotice>>,
+    approved_identity: Option<Address>,
     resolved_identity: Option<(Address, String)>,
     legacy_adapter_migration: bool,
 }
@@ -148,6 +189,7 @@ impl BluerSetupBackend {
             initial_bonds: HashSet::new(),
             gate: None,
             notices: None,
+            approved_identity: None,
             resolved_identity: None,
             legacy_adapter_migration: false,
         }
@@ -268,6 +310,7 @@ impl BluerSetupBackend {
         };
         let (notice_tx, notice_rx) = mpsc::unbounded_channel();
         let gate = Arc::new(AgentGate {
+            adapter: adapter.name().to_owned(),
             state: Mutex::new(AgentGateState::default()),
             notices: notice_tx,
         });
@@ -357,10 +400,23 @@ impl BluerSetupBackend {
             return Ok(());
         };
         let adapter = self.adapter.as_ref().ok_or(SetupFailure::CleanupFailed)?;
-        let pairable = adapter.set_pairable(snapshot.pairable).await;
-        let discoverable = adapter.set_discoverable(snapshot.discoverable).await;
-        pairable.map_err(|_| SetupFailure::CleanupFailed)?;
-        discoverable.map_err(|_| SetupFailure::CleanupFailed)?;
+        let pairable_restored = adapter.is_pairable().await.ok() == Some(snapshot.pairable)
+            || adapter.set_pairable(snapshot.pairable).await.is_ok();
+        let discoverable_restored = adapter.is_discoverable().await.ok()
+            == Some(snapshot.discoverable)
+            || adapter
+                .set_discoverable(snapshot.discoverable)
+                .await
+                .is_ok();
+        if !pairable_restored {
+            eprintln!("ancs-bridge: setup cleanup failed to restore adapter pairability");
+        }
+        if !discoverable_restored {
+            eprintln!("ancs-bridge: setup cleanup failed to restore adapter discoverability");
+        }
+        if !pairable_restored || !discoverable_restored {
+            return Err(SetupFailure::CleanupFailed);
+        }
         Ok(())
     }
 }
@@ -374,7 +430,11 @@ impl SetupBackend for BluerSetupBackend {
                 .adapter
                 .as_ref()
                 .ok_or(SetupFailure::AdapterUnavailable)?;
-            if let Some((_, repair_device)) = identity_device(adapter, repair_target).await? {
+            if let Some(repair_device) =
+                transport::paired_device_by_identity(adapter, repair_target)
+                    .await
+                    .map_err(|_| SetupFailure::BackendFailed)?
+            {
                 adapter
                     .remove_device(repair_device.address())
                     .await
@@ -418,12 +478,6 @@ impl SetupBackend for BluerSetupBackend {
                 .recv()
                 .await
                 .ok_or(SetupFailure::BackendFailed)?;
-            if self.initial_bonds.contains(&notice.address) {
-                if let Some(gate) = &self.gate {
-                    let _ = gate.answer(notice.address, false);
-                }
-                continue;
-            }
             let adapter = self
                 .adapter
                 .as_ref()
@@ -431,6 +485,17 @@ impl SetupBackend for BluerSetupBackend {
             let device = adapter
                 .device(notice.address)
                 .map_err(|_| SetupFailure::PairingFailed)?;
+            if self.initial_bonds.contains(&notice.address)
+                || device
+                    .remote_address()
+                    .await
+                    .is_ok_and(|identity| self.initial_bonds.contains(&identity))
+            {
+                if let Some(gate) = &self.gate {
+                    let _ = gate.answer(notice.address, false).await;
+                }
+                continue;
+            }
             return Ok(Candidate {
                 kind: ConfirmationKind::Pairing,
                 address: notice.address.to_string(),
@@ -460,7 +525,8 @@ impl SetupBackend for BluerSetupBackend {
         self.gate
             .as_ref()
             .ok_or(SetupFailure::PairingFailed)?
-            .answer(address, accept)?;
+            .answer(address, accept)
+            .await?;
         if !accept {
             return Ok(());
         }
@@ -468,41 +534,62 @@ impl SetupBackend for BluerSetupBackend {
             .adapter
             .as_ref()
             .ok_or(SetupFailure::AdapterUnavailable)?;
-        let (_, device) = identity_device(adapter, address)
-            .await?
-            .ok_or(SetupFailure::PairingFailed)?;
+        let approved = adapter
+            .device(address)
+            .map_err(|_| SetupFailure::PairingFailed)?;
+        let mut identity = address;
         let deadline = tokio::time::Instant::now() + PAIRING_SETTLE_TIMEOUT;
         while tokio::time::Instant::now() < deadline {
-            if device.is_paired().await.unwrap_or(false) {
+            // Only learn a replacement identity from the approved agent object.
+            if let Ok(current) = approved.remote_address().await {
+                identity = current;
+            }
+            if self.initial_bonds.contains(&identity) {
+                return Err(SetupFailure::PairingFailed);
+            }
+            if let Some(device) = transport::paired_device_by_identity(adapter, identity)
+                .await
+                .map_err(|_| SetupFailure::BackendFailed)?
+            {
                 device
                     .set_trusted(true)
                     .await
                     .map_err(|_| SetupFailure::TrustFailed)?;
+                self.approved_identity = Some(identity);
                 return Ok(());
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
+        eprintln!(
+            "ancs-bridge: BlueZ did not report the approved pairing before the settle deadline"
+        );
         Err(SetupFailure::PairingFailed)
     }
 
     async fn verify_ancs(&mut self, candidate: &Candidate) -> Result<(), SetupFailure> {
-        let address: Address = candidate
-            .address
-            .parse()
-            .map_err(|_| SetupFailure::PairingFailed)?;
+        let identity = match self.approved_identity {
+            Some(identity) => identity,
+            None => candidate
+                .address
+                .parse()
+                .map_err(|_| SetupFailure::PairingFailed)?,
+        };
         let adapter = self
             .adapter
             .as_ref()
             .ok_or(SetupFailure::AdapterUnavailable)?;
-        let (identity, device) = identity_device(adapter, address)
-            .await?
-            .ok_or(SetupFailure::PairingFailed)?;
         loop {
-            if device.is_paired().await.unwrap_or(false)
-                && device.is_trusted().await.unwrap_or(false)
-                && device.is_connected().await.unwrap_or(false)
-                && device.is_services_resolved().await.unwrap_or(false)
-            {
+            let device = transport::paired_device_by_identity(adapter, identity)
+                .await
+                .map_err(|_| SetupFailure::BackendFailed)?;
+            if let Some(device) = device {
+                if !device.is_trusted().await.unwrap_or(false)
+                    || !device.is_connected().await.unwrap_or(false)
+                    || !device.is_services_resolved().await.unwrap_or(false)
+                {
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                    continue;
+                }
                 if let Some((data_source_characteristic, notification_source)) =
                     find_ancs_sources(&device)
                         .await
@@ -557,7 +644,6 @@ impl SetupBackend for BluerSetupBackend {
         self.data_source = None;
         self.gate = None;
         self.notices = None;
-        let restored = self.restore_adapter().await;
         let registrations_stopped = if let Some(registrations) = self.registrations.take() {
             let baseline = registrations.advertising_baseline;
             drop(registrations);
@@ -568,6 +654,14 @@ impl SetupBackend for BluerSetupBackend {
         } else {
             true
         };
+        // BlueZ may reject adapter mode changes while the setup advertisement is active.
+        let restored = self.restore_adapter().await;
+        if !notifications_stopped {
+            eprintln!("ancs-bridge: setup cleanup did not stop ANCS subscriptions");
+        }
+        if !registrations_stopped {
+            eprintln!("ancs-bridge: setup cleanup did not release the BlueZ advertisement");
+        }
         restored?;
         if notifications_stopped && registrations_stopped {
             Ok(())
@@ -712,15 +806,19 @@ fn pairing_agent(gate: Arc<AgentGate>) -> Agent {
         request_default: true,
         request_confirmation: Some(Box::new(move |request| {
             let gate = Arc::clone(&confirmation);
-            async move { gate.request(request.device, Some(request.passkey)).await }.boxed()
+            async move {
+                gate.request(&request.adapter, request.device, Some(request.passkey))
+                    .await
+            }
+            .boxed()
         })),
         request_authorization: Some(Box::new(move |request| {
             let gate = Arc::clone(&authorization);
-            async move { gate.request(request.device, None).await }.boxed()
+            async move { gate.request(&request.adapter, request.device, None).await }.boxed()
         })),
         authorize_service: Some(Box::new(move |request| {
             let gate = Arc::clone(&service);
-            async move { gate.request(request.device, None).await }.boxed()
+            async move { gate.authorize_service(&request.adapter, request.device) }.boxed()
         })),
         ..Default::default()
     }
@@ -736,8 +834,17 @@ async fn paired_addresses(adapter: &Adapter) -> Result<HashSet<Address>, SetupFa
         let device = adapter
             .device(address)
             .map_err(|_| SetupFailure::BackendFailed)?;
-        if device.is_paired().await.unwrap_or(false) {
-            paired.insert(address);
+        match device.is_paired().await {
+            Ok(true) => match device.remote_address().await {
+                Ok(identity) => {
+                    paired.insert(identity);
+                }
+                Err(error) if error.kind == bluer::ErrorKind::NotFound => {}
+                Err(_) => return Err(SetupFailure::BackendFailed),
+            },
+            Ok(false) => {}
+            Err(error) if error.kind == bluer::ErrorKind::NotFound => {}
+            Err(_) => return Err(SetupFailure::BackendFailed),
         }
     }
     Ok(paired)
@@ -747,11 +854,13 @@ async fn existing_candidate(
     adapter: &Adapter,
     address: Address,
 ) -> Result<Option<Candidate>, SetupFailure> {
-    let Some((address, device)) = identity_device(adapter, address).await? else {
+    let Some(device) = transport::paired_device_by_identity(adapter, address)
+        .await
+        .map_err(|_| SetupFailure::BackendFailed)?
+    else {
         return Ok(None);
     };
-    let ready = device.is_paired().await.unwrap_or(false)
-        && device.is_trusted().await.unwrap_or(false)
+    let ready = device.is_trusted().await.unwrap_or(false)
         && device.is_connected().await.unwrap_or(false)
         && device.is_services_resolved().await.unwrap_or(false)
         && transport::has_complete_ancs(&device).await.unwrap_or(false);
@@ -775,10 +884,13 @@ async fn paired_candidate(
     adapter: &Adapter,
     address: Address,
 ) -> Result<Option<Candidate>, SetupFailure> {
-    let Some((address, device)) = identity_device(adapter, address).await? else {
+    let Some(device) = transport::paired_device_by_identity(adapter, address)
+        .await
+        .map_err(|_| SetupFailure::BackendFailed)?
+    else {
         return Ok(None);
     };
-    if !device.is_paired().await.unwrap_or(false) || !device.is_trusted().await.unwrap_or(false) {
+    if !device.is_trusted().await.unwrap_or(false) {
         return Ok(None);
     }
     Ok(Some(Candidate {
@@ -792,27 +904,6 @@ async fn paired_candidate(
             .unwrap_or_else(|| "iPhone".into()),
         passkey: None,
     }))
-}
-
-async fn identity_device(
-    adapter: &Adapter,
-    requested: Address,
-) -> Result<Option<(Address, bluer::Device)>, SetupFailure> {
-    let path_addresses = adapter
-        .device_addresses()
-        .await
-        .map_err(|_| SetupFailure::BackendFailed)?;
-    if path_addresses.contains(&requested) {
-        let device = adapter
-            .device(requested)
-            .map_err(|_| SetupFailure::BackendFailed)?;
-        let identity = device.remote_address().await.unwrap_or(requested);
-        return Ok(Some((identity, device)));
-    }
-    let device = transport::device_by_identity(adapter, requested)
-        .await
-        .map_err(|_| SetupFailure::BackendFailed)?;
-    Ok(device.map(|device| (requested, device)))
 }
 
 async fn find_ancs_sources(
@@ -906,50 +997,119 @@ mod tests {
     async fn agent_gate_allows_one_identity_and_rejects_competitors() {
         let (notices, mut receiver) = mpsc::unbounded_channel();
         let gate = Arc::new(AgentGate {
+            adapter: "hci0".into(),
             state: Mutex::new(AgentGateState::default()),
             notices,
         });
         let first_address: Address = "AA:BB:CC:DD:EE:FF".parse().unwrap();
         let other_address: Address = "11:22:33:44:55:66".parse().unwrap();
         let first_gate = Arc::clone(&gate);
-        let first =
-            tokio::spawn(async move { first_gate.request(first_address, Some(123456)).await });
+        let first = tokio::spawn(async move {
+            first_gate
+                .request("hci0", first_address, Some(123456))
+                .await
+        });
         let notice = receiver.recv().await.unwrap();
         assert_eq!(notice.address, first_address);
         assert_eq!(notice.passkey, Some(123456));
         assert_eq!(
-            gate.request(other_address, Some(654321)).await,
+            gate.request("hci0", other_address, Some(654321)).await,
             Err(AgentReqError::Rejected)
         );
-        gate.answer(first_address, true).unwrap();
-        assert_eq!(first.await.unwrap(), Ok(()));
-        assert_eq!(gate.request(first_address, None).await, Ok(()));
-        assert!(
-            receiver.try_recv().is_err(),
-            "same identity is not re-prompted"
+        assert_eq!(
+            gate.request("hci0", first_address, Some(654321)).await,
+            Err(AgentReqError::Rejected),
+            "a new passkey cannot replace the displayed request"
         );
+        gate.answer(first_address, true).await.unwrap();
+        assert_eq!(first.await.unwrap(), Ok(()));
+        assert_eq!(gate.authorize_service("hci0", first_address), Ok(()));
+        assert_eq!(
+            gate.request("hci0", first_address, Some(654321)).await,
+            Err(AgentReqError::Rejected),
+            "a new pairing request cannot inherit approval"
+        );
+        assert_eq!(
+            gate.authorize_service("hci1", first_address),
+            Err(AgentReqError::Rejected)
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn rejecting_an_initial_bond_reopens_gate_for_a_fresh_identity() {
         let (notices, mut receiver) = mpsc::unbounded_channel();
         let gate = Arc::new(AgentGate {
+            adapter: "hci0".into(),
             state: Mutex::new(AgentGateState::default()),
             notices,
         });
         let old: Address = "AA:BB:CC:DD:EE:FF".parse().unwrap();
         let fresh: Address = "11:22:33:44:55:66".parse().unwrap();
         let old_gate = Arc::clone(&gate);
-        let old_request = tokio::spawn(async move { old_gate.request(old, None).await });
+        let old_request = tokio::spawn(async move { old_gate.request("hci0", old, None).await });
         assert_eq!(receiver.recv().await.unwrap().address, old);
-        gate.answer(old, false).unwrap();
+        gate.answer(old, false).await.unwrap();
         assert_eq!(old_request.await.unwrap(), Err(AgentReqError::Rejected));
 
         let fresh_gate = Arc::clone(&gate);
-        let fresh_request = tokio::spawn(async move { fresh_gate.request(fresh, None).await });
+        let fresh_request =
+            tokio::spawn(async move { fresh_gate.request("hci0", fresh, None).await });
         assert_eq!(receiver.recv().await.unwrap().address, fresh);
-        gate.answer(fresh, true).unwrap();
+        gate.answer(fresh, true).await.unwrap();
         assert_eq!(fresh_request.await.unwrap(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn cancelled_agent_request_cannot_be_confirmed_or_replaced() {
+        let (notices, mut receiver) = mpsc::unbounded_channel();
+        let gate = AgentGate {
+            adapter: "hci0".into(),
+            state: Mutex::new(AgentGateState::default()),
+            notices,
+        };
+        let address = "AA:BB:CC:DD:EE:FF".parse().unwrap();
+        let mut request = Box::pin(gate.request("hci0", address, Some(123456)));
+        assert!(futures::poll!(request.as_mut()).is_pending());
+        assert_eq!(receiver.try_recv().unwrap().passkey, Some(123456));
+
+        // bluer drops the callback future in response to Agent1.Cancel.
+        drop(request);
+        assert_eq!(
+            gate.request("hci0", address, Some(654321)).await,
+            Err(AgentReqError::Rejected)
+        );
+        assert_eq!(
+            gate.answer(address, true).await,
+            Err(SetupFailure::PairingFailed)
+        );
+        assert_eq!(
+            gate.authorize_service("hci0", address),
+            Err(AgentReqError::Rejected)
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_sending_decision_prevents_approval() {
+        let (notices, mut receiver) = mpsc::unbounded_channel();
+        let gate = AgentGate {
+            adapter: "hci0".into(),
+            state: Mutex::new(AgentGateState::default()),
+            notices,
+        };
+        let address = "AA:BB:CC:DD:EE:FF".parse().unwrap();
+        let mut request = Box::pin(gate.request("hci0", address, Some(123456)));
+        assert!(futures::poll!(request.as_mut()).is_pending());
+        receiver.try_recv().unwrap();
+        let mut answer = Box::pin(gate.answer(address, true));
+        assert!(futures::poll!(answer.as_mut()).is_pending());
+        drop(request);
+        assert_eq!(answer.await, Err(SetupFailure::PairingFailed));
+        assert_eq!(
+            gate.authorize_service("hci0", address),
+            Err(AgentReqError::Rejected)
+        );
     }
 
     #[test]

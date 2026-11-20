@@ -10,6 +10,7 @@ use bluer::{
     },
     Adapter, Address, Device, Session, Uuid,
 };
+use dbus::blocking::{stdintf::org_freedesktop_dbus::ObjectManager, SyncConnection};
 use futures::{stream::BoxStream, StreamExt};
 use std::{
     collections::VecDeque,
@@ -40,6 +41,40 @@ pub async fn device_by_identity(adapter: &Adapter, identity: Address) -> Result<
         }
     }
     Ok(None)
+}
+
+/// An identity may have multiple BlueZ objects during LE privacy resolution.
+/// Only a paired object can carry ANCS, even if an unpaired alias is connected.
+pub(crate) async fn paired_device_by_identity(
+    adapter: &Adapter,
+    identity: Address,
+) -> bluer::Result<Option<Device>> {
+    let mut disconnected = None;
+    for path_address in adapter.device_addresses().await? {
+        let device = adapter.device(path_address)?;
+        let remote = match device.remote_address().await {
+            Ok(remote) => remote,
+            Err(error) if error.kind == bluer::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if remote != identity {
+            continue;
+        }
+        match device.is_paired().await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) if error.kind == bluer::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+        match device.is_connected().await {
+            Ok(true) => return Ok(Some(device)),
+            Ok(false) => {}
+            Err(error) if error.kind == bluer::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+        disconnected.get_or_insert(device);
+    }
+    Ok(disconnected)
 }
 
 /// Resolve a controller through its stable public address rather than its
@@ -127,6 +162,7 @@ pub enum TransportObservation {
     WaitingForAuthorization,
     Available,
     Ready,
+    UnresolvedAncs { subscribed: bool },
 }
 
 fn configured_device<T>(device: Option<T>) -> std::result::Result<T, TransportObservation> {
@@ -226,12 +262,15 @@ struct RegistrationOwner<A, B> {
 type Registrations = RegistrationOwner<ApplicationHandle, AdvertisementHandle>;
 
 struct Characteristics {
+    device_path_address: Address,
+    services_resolved: bool,
     notification_source: Characteristic,
     data_source: Characteristic,
     control_point: Characteristic,
 }
 
 struct Subscriptions {
+    requires_resolved: bool,
     notification_source: BoxStream<'static, Vec<u8>>,
     data_source: BoxStream<'static, Vec<u8>>,
 }
@@ -249,6 +288,7 @@ pub struct BluerTransport {
     characteristics: Option<Characteristics>,
     subscriptions: Option<Subscriptions>,
     current_device_name: Option<String>,
+    object_manager: Option<SyncConnection>,
 }
 
 impl BluerTransport {
@@ -268,6 +308,7 @@ impl BluerTransport {
             characteristics: None,
             subscriptions: None,
             current_device_name: None,
+            object_manager: None,
         }
     }
 
@@ -357,15 +398,26 @@ impl BluerTransport {
         Ok(true)
     }
 
-    async fn discover_characteristics(&mut self) -> Result<bool> {
-        let adapter = self.adapter.as_ref().context("adapter unavailable")?;
-        let device = device_by_identity(adapter, self.device_address)
-            .await?
-            .context("configured Bluetooth identity is not present in BlueZ")?;
+    async fn discover_characteristics(
+        &mut self,
+        device: &Device,
+        services_resolved: bool,
+    ) -> Result<bool> {
         let mut notification_source = None;
         let mut data_source = None;
         let mut control_point = None;
-        for service in device.services().await? {
+        let resolved;
+        let exported;
+        let services = if services_resolved {
+            resolved = device.services().await?;
+            resolved.as_slice()
+        } else if let Some(id) = self.exported_ancs_service(device).await? {
+            exported = device.service(id).await?;
+            std::slice::from_ref(&exported)
+        } else {
+            return Ok(false);
+        };
+        for service in services {
             if service.uuid().await? != hid::ANCS_SERVICE_UUID {
                 continue;
             }
@@ -382,6 +434,8 @@ impl BluerTransport {
             (notification_source, data_source, control_point)
         {
             self.characteristics = Some(Characteristics {
+                device_path_address: device.address(),
+                services_resolved,
                 notification_source,
                 data_source,
                 control_point,
@@ -390,6 +444,46 @@ impl BluerTransport {
         } else {
             Ok(false)
         }
+    }
+
+    async fn exported_ancs_service(&mut self, device: &Device) -> Result<Option<u16>> {
+        // bluer's Device::services waits for ServicesResolved even when BlueZ
+        // already exports the GATT objects. Read the exact paired object's tree.
+        let device_path = format!(
+            "/org/bluez/{}/dev_{}",
+            device.adapter_name(),
+            device.address().to_string().replace(':', "_")
+        );
+        let connection = self.object_manager.take();
+        let (connection, service) = tokio::task::spawn_blocking(move || {
+            let connection = match connection {
+                Some(connection) => connection,
+                None => SyncConnection::new_system()?,
+            };
+            let objects = connection
+                .with_proxy("org.bluez", "/", std::time::Duration::from_secs(5))
+                .get_managed_objects()?;
+            let id = objects.into_iter().find_map(|(path, interfaces)| {
+                let props = interfaces.get("org.bluez.GattService1")?;
+                let uuid = dbus::arg::prop_cast::<String>(props, "UUID")?;
+                if uuid.parse::<Uuid>().ok()? != hid::ANCS_SERVICE_UUID {
+                    return None;
+                }
+                let owner = dbus::arg::prop_cast::<dbus::Path<'static>>(props, "Device")?;
+                if owner.as_ref() != device_path {
+                    return None;
+                }
+                let (parent, name) = path.rsplit_once('/')?;
+                if parent != device_path {
+                    return None;
+                }
+                u16::from_str_radix(name.strip_prefix("service")?, 16).ok()
+            });
+            Ok::<_, dbus::Error>((connection, id))
+        })
+        .await??;
+        self.object_manager = Some(connection);
+        Ok(service)
     }
 }
 
@@ -414,7 +508,8 @@ impl BluetoothTransport for BluerTransport {
         }
         let adapter = self.adapter.as_ref().context("adapter unavailable")?;
         let device =
-            match configured_device(device_by_identity(adapter, self.device_address).await?) {
+            match configured_device(paired_device_by_identity(adapter, self.device_address).await?)
+            {
                 Ok(device) => device,
                 Err(observation) => return Ok(observation),
             };
@@ -423,19 +518,39 @@ impl BluetoothTransport for BluerTransport {
                 self.current_device_name = Some(alias);
             }
         }
-        if !device.is_paired().await? {
-            return Ok(TransportObservation::DeviceNotBonded);
-        }
         if !device.is_connected().await? {
             return Ok(TransportObservation::WaitingForPhone);
         }
-        if !device.is_services_resolved().await? {
-            return Ok(TransportObservation::WaitingForServices);
+        let services_resolved = device.is_services_resolved().await?;
+        let session_needs_recheck = !services_resolved
+            && self
+                .subscriptions
+                .as_ref()
+                .is_some_and(|subscriptions| subscriptions.requires_resolved);
+        let device_changed = self
+            .characteristics
+            .as_ref()
+            .is_some_and(|previous| previous.device_path_address != device.address());
+        if session_needs_recheck || device_changed {
+            self.end_ancs_session().await;
         }
-        if !self.discover_characteristics().await? {
-            return Ok(TransportObservation::WaitingForAuthorization);
+        if session_needs_recheck
+            || device_changed
+            || !self
+                .discover_characteristics(&device, services_resolved)
+                .await?
+        {
+            return Ok(if services_resolved {
+                TransportObservation::WaitingForAuthorization
+            } else {
+                TransportObservation::WaitingForServices
+            });
         }
-        if self.subscriptions.is_some() {
+        if !services_resolved {
+            Ok(TransportObservation::UnresolvedAncs {
+                subscribed: self.subscriptions.is_some(),
+            })
+        } else if self.subscriptions.is_some() {
             Ok(TransportObservation::Ready)
         } else {
             Ok(TransportObservation::Available)
@@ -452,19 +567,19 @@ impl BluetoothTransport for BluerTransport {
             .as_ref()
             .ok_or_else(|| SubscriptionFailure::new("discovery", anyhow!("ANCS unavailable")))?;
         // The order is protocol-significant: Data Source must be active first.
-        let data_source = characteristics
-            .data_source
-            .notify()
-            .await
-            .map_err(|error| {
-                SubscriptionFailure::new(
-                    "data-source",
-                    anyhow!(error).context("subscribing Data Source"),
-                )
-            })?
-            .boxed();
-        let notification_source = match characteristics.notification_source.notify().await {
-            Ok(value) => value.boxed(),
+        let data_source = subscribe_characteristic(
+            &characteristics.data_source,
+            characteristics.services_resolved,
+        )
+        .await
+        .map_err(|error| SubscriptionFailure::new("data-source", error))?;
+        let notification_source = match subscribe_characteristic(
+            &characteristics.notification_source,
+            characteristics.services_resolved,
+        )
+        .await
+        {
+            Ok(value) => value,
             Err(error) => {
                 let mut partial = Some(data_source);
                 let stopped = quiesce_notifications(
@@ -484,6 +599,7 @@ impl BluetoothTransport for BluerTransport {
             }
         };
         self.subscriptions = Some(Subscriptions {
+            requires_resolved: characteristics.services_resolved,
             notification_source,
             data_source,
         });
@@ -551,6 +667,23 @@ impl BluetoothTransport for BluerTransport {
         // systemd restart cannot inherit a stale Notifying=true session.
         self.reset_bluez_session().await;
     }
+}
+
+async fn subscribe_characteristic(
+    characteristic: &Characteristic,
+    services_resolved: bool,
+) -> bluer::Result<BoxStream<'static, Vec<u8>>> {
+    if services_resolved {
+        return Ok(characteristic.notify().await?.boxed());
+    }
+    // StartNotify can succeed offline on cached services. AcquireNotify
+    // requires a live GATT client and its socket closes when the link drops.
+    let reader = characteristic.notify_io().await?;
+    Ok(futures::stream::unfold(reader, |reader| async move {
+        let value = reader.recv().await.ok()?;
+        (!value.is_empty()).then_some((value, reader))
+    })
+    .boxed())
 }
 
 #[derive(Clone)]
