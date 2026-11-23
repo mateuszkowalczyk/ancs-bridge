@@ -27,3 +27,4 @@
 - Pre- and post-review QEMU builds passed with Arch `rust 1:1.100.0-1` (providing Rust and Cargo 1.100.0): 116 tests passed, two hardware tests ignored, and the installed CLI reported version `0.2.0` and API `1`.
 - `namcap` reported no errors. Its loader and implicit `glibc`/`libgcc` warnings match the prior packaging review; BlueZ and WirePlumber are intentional runtime dependencies, not linked libraries.
 - The exported post-review package has SHA-256 `71ea0d5024b5ef1be0b5f6257e3fdb28d4774d49dd815826f41d7b8d6519f282`. Use these exact bytes for the physical smoke test.
+- The operator confirmed iPhone notification delivery before and after reconnect on the physical host running `0.2.0-2`. Status showed `ready`, `subscribed: true`, and `servicesResolved: true`; the `AcquireNotify` socket path remains unverified.
