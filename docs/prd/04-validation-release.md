@@ -41,7 +41,12 @@ Stop or redesign before product implementation if pairing needs patched BlueZ/iO
 
 ## Packaging tests
 
-- `makepkg --cleanbuild`, `namcap`, and `.SRCINFO` validation in clean Arch.
+- Before publishing any Arch package release, fully update a clean x86_64
+  rolling Arch guest (QEMU/KVM is sufficient) and record its Rust/Cargo package
+  versions. Verify the final recipe's source checksum and `.SRCINFO`, build
+  it with `makepkg --cleanbuild` as an unprivileged user, run `namcap` on the
+  recipe and package, and install the package. Check that `ancs-bridge version`
+  reports the intended release and `apiVersion: 1`.
 - Clean install, upgrade, service enable/start, service restart, stop/disable, and package removal.
 - Verify installed artifacts are only binary, license, and user unit.
 - Verify no install hook enables services or mutates user configuration.

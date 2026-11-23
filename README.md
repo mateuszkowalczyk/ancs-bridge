@@ -21,11 +21,12 @@ runtime dependencies.
 ```console
 git clone https://github.com/mateuszkowalczyk/ancs-bridge.git
 cd ancs-bridge
-git checkout --detach refs/tags/v0.2.0 && cat PKGBUILD
+git checkout --detach refs/tags/arch-0.2.0-2 && cat PKGBUILD
 ```
 
-The release's `PKGBUILD` pins and verifies the source archive. After reviewing
-the recipe, build and install the package as a regular user:
+The Arch package revision `0.2.0-2` builds with Rust 1.100. Its `PKGBUILD`
+pins and verifies the source archive. After reviewing the recipe, build and
+install the package as a regular user:
 
 ```console
 makepkg --syncdeps --install

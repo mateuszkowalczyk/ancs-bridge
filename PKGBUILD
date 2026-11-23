@@ -2,7 +2,7 @@
 # Pin the reviewed source commit that precedes the packaging commit.
 pkgname=ancs-bridge
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Secure local iPhone notification forwarding for Linux via Apple ANCS'
 arch=('x86_64')
 url='https://github.com/mateuszkowalczyk/ancs-bridge'
@@ -10,9 +10,9 @@ license=('MIT')
 options=('!debug')
 depends=('bluez' 'dbus' 'wireplumber')
 makedepends=('cargo' 'pkgconf')
-_commit=7cfbe8ba8a0efe7ce7f11c59ec5768299beff9ab
+_commit=e19e2869441646d72f3a4090270e98e4cf368fc6
 source=("$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
-sha256sums=('139c067bce91457fd630cc1649fbf54ccdf533b71f38646f12ddb7af87b78306')
+sha256sums=('41390c4c5c58711c61185956eceb44fb1c639235da8f1de5502f619c3a712e8e')
 
 prepare() {
   cd "$srcdir/$pkgname-$_commit"
