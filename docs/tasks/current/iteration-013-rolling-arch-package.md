@@ -1,6 +1,6 @@
 # Iteration 013 — Restore the rolling Arch package build
 
-**Status:** Planned
+**Status:** Awaiting approval
 
 ## Sources
 
@@ -14,13 +14,14 @@
 - [x] Isolate the `doctor` integration test from the build host's system D-Bus so `makepkg` does not depend on an active BlueZ daemon.
 - [x] Prepare package `0.2.0-2` without changing the CLI version: pin the fixed source commit and archive SHA-256 in `PKGBUILD`, and regenerate `.SRCINFO`.
 - [x] In a clean x86_64 Arch QEMU/KVM guest, run a full system update and record the Rust/Cargo package versions. Verify the source checksum and `.SRCINFO`, build the final recipe with `makepkg --cleanbuild --syncdeps` as an unprivileged user, run `namcap` on the recipe and package, and install the package. Confirm the installed `ancs-bridge version` returns `{"apiVersion":1,"version":"0.2.0"}`.
-- [ ] Install that exact package on the physical Arch machine. With a real iPhone, verify notification delivery before and after reconnect, including the `notify_io()` path used when BlueZ reports `ServicesResolved=false`. If that path regresses, diagnose before publishing; consider backporting only the upstream compiler fix.
+- [x] Install the guest-built package on physical Arch and verify iPhone notification delivery before and after reconnect.
 - [x] Document the clean rolling Arch build/install check as a required pre-publication step for future Arch package releases.
-- [ ] After the hardware smoke passes, publish the corrected recipe under immutable tag `arch-0.2.0-2` and update the GitHub `v0.2.0` release notes to direct users to it. Verify the public install link; do not move the original tag.
+- [x] Publish the corrected recipe under immutable tag `arch-0.2.0-2` and update the GitHub `v0.2.0` release notes to direct users to it. Verify the public install link; do not move the original tag.
 
 ## Out of scope
 
 - Scheduled CI and a Rust beta matrix.
+- Targeted `AcquireNotify` validation when BlueZ reports `ServicesResolved=false`. The operator approved publication after normal reconnect and delivery passed; neither the live properties nor the reconnect watcher showed `NotifyAcquired=true`.
 
 ## Validation notes
 
